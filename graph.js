@@ -12,6 +12,7 @@ import {
   shouldContinue,
 } from "./planner.js";
 import {
+  applyGeneratedPatch,
   generateCode,
   packageFeedback,
   routeAfterSyntaxCheck,
@@ -24,12 +25,14 @@ export function buildWorkerGraph() {
   const workerGraph = new StateGraph(AgentStateAnnotation)
     .addNode("workerTools", workerTools)
     .addNode("generateCode", generateCode)
+    .addNode("applyGeneratedPatch", applyGeneratedPatch)
     .addNode("syntaxCheck", syntaxCheck)
     .addNode("runTests", runTests)
     .addNode("packageFeedback", packageFeedback)
     .addEdge(START, "workerTools")
     .addEdge("workerTools", "generateCode")
-    .addEdge("generateCode", "syntaxCheck")
+    .addEdge("generateCode", "applyGeneratedPatch")
+    .addEdge("applyGeneratedPatch", "syntaxCheck")
     .addConditionalEdges("syntaxCheck", routeAfterSyntaxCheck, {
       run_tests: "runTests",
       package_feedback: "packageFeedback",

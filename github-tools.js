@@ -1,5 +1,15 @@
 import process from "process";
 
+class GitHubApiError extends Error {
+  constructor(message, status, path, details) {
+    super(message);
+    this.name = "GitHubApiError";
+    this.status = status;
+    this.path = path;
+    this.details = details;
+  }
+}
+
 function getRepoConfig() {
   const token = process.env.GITHUB_TOKEN || process.env.GH_PAT;
   const repository = process.env.TARGET_REPOSITORY || process.env.GITHUB_REPOSITORY;
@@ -17,27 +27,73 @@ function getRepoConfig() {
 
 async function githubRequest(path, options = {}) {
   const { token } = getRepoConfig();
-  const response = await fetch(`https://api.github.com${path}`, {
-    method: options.method || "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "User-Agent": "auto-evolve-js-agent",
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const maxAttempts = 3;
+  let lastError;
 
-  if (!response.ok) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const response = await fetch(`https://api.github.com${path}`, {
+      method: options.method || "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "auto-evolve-js-agent",
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+
+    if (response.ok) {
+      if (response.status === 204) {
+        return {};
+      }
+      return response.json();
+    }
+
     const text = await response.text();
-    throw new Error(`GitHub API failed (${response.status}) ${path}: ${text}`);
+    const error = new GitHubApiError(
+      `GitHub API failed (${response.status}) ${path}: ${text}`,
+      response.status,
+      path,
+      text,
+    );
+
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const remaining = Number(response.headers.get("x-ratelimit-remaining") || "-1");
+    const resetEpochSec = Number(response.headers.get("x-ratelimit-reset") || 0);
+    const resetDelayMs = resetEpochSec > 0 ? Math.max(0, resetEpochSec * 1000 - Date.now()) : 0;
+    const backoffMs = 500 * 2 ** (attempt - 1);
+
+    const shouldRetry =
+      attempt < maxAttempts &&
+      (response.status === 429 ||
+        response.status >= 500 ||
+        (response.status === 403 && (remaining === 0 || /rate limit/i.test(text))));
+
+    if (!shouldRetry) {
+      throw error;
+    }
+
+    lastError = error;
+    const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.max(backoffMs, resetDelayMs);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  if (response.status === 204) {
-    return {};
-  }
+  throw lastError;
+}
 
-  return response.json();
+function ensureString(value, fieldName) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Invalid input: '${fieldName}' must be a non-empty string.`);
+  }
+  return value;
+}
+
+function ensureIssueNumber(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("Invalid input: 'issueNumber' must be a positive integer.");
+  }
+  return parsed;
 }
 
 function toBase64(content) {
@@ -64,6 +120,7 @@ export async function listDirectory(path = "", ref = process.env.TARGET_BRANCH |
 }
 
 export async function readFile(path, ref = process.env.TARGET_BRANCH || "main") {
+  ensureString(path, "path");
   const { owner, repo } = getRepoConfig();
   const encodedPath = encodeURIComponent(path).replace(/%2F/g, "/");
   const data = await githubRequest(`/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`);
@@ -75,6 +132,9 @@ export async function readFile(path, ref = process.env.TARGET_BRANCH || "main") 
 }
 
 export async function upsertFile(path, content, message, branch = process.env.TARGET_BRANCH || "main") {
+  ensureString(path, "path");
+  ensureString(content, "content");
+  ensureString(message, "message");
   const { owner, repo } = getRepoConfig();
   const encodedPath = encodeURIComponent(path).replace(/%2F/g, "/");
   let sha;
@@ -82,8 +142,12 @@ export async function upsertFile(path, content, message, branch = process.env.TA
   try {
     const existing = await githubRequest(`/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`);
     sha = existing.sha;
-  } catch {
-    sha = undefined;
+  } catch (error) {
+    if (error instanceof GitHubApiError && error.status === 404) {
+      sha = undefined;
+    } else {
+      throw error;
+    }
   }
 
   const result = await githubRequest(`/repos/${owner}/${repo}/contents/${encodedPath}`, {
@@ -104,6 +168,8 @@ export async function upsertFile(path, content, message, branch = process.env.TA
 }
 
 export async function deleteFile(path, message, branch = process.env.TARGET_BRANCH || "main") {
+  ensureString(path, "path");
+  ensureString(message, "message");
   const { owner, repo } = getRepoConfig();
   const encodedPath = encodeURIComponent(path).replace(/%2F/g, "/");
   const existing = await githubRequest(`/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`);
@@ -136,6 +202,7 @@ export async function listIssues(state = "open", perPage = 20) {
 }
 
 export async function createIssue(title, body) {
+  ensureString(title, "title");
   const { owner, repo } = getRepoConfig();
   const data = await githubRequest(`/repos/${owner}/${repo}/issues`, {
     method: "POST",
@@ -149,8 +216,10 @@ export async function createIssue(title, body) {
 }
 
 export async function commentIssue(issueNumber, body) {
+  const normalizedIssueNumber = ensureIssueNumber(issueNumber);
+  ensureString(body, "body");
   const { owner, repo } = getRepoConfig();
-  const data = await githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+  const data = await githubRequest(`/repos/${owner}/${repo}/issues/${normalizedIssueNumber}/comments`, {
     method: "POST",
     body: { body },
   });
@@ -164,13 +233,18 @@ export async function commentIssue(issueNumber, body) {
 export async function executeGithubTool(action, input = {}) {
   switch (action) {
     case "read_file":
-      return readFile(input.path, input.ref);
+      return readFile(ensureString(input.path, "path"), input.ref);
     case "list_directory":
       return listDirectory(input.path, input.ref);
     case "upsert_file":
-      return upsertFile(input.path, input.content, input.message || `chore: upsert ${input.path}`, input.branch);
+      return upsertFile(
+        ensureString(input.path, "path"),
+        ensureString(input.content, "content"),
+        input.message || `chore: upsert ${input.path}`,
+        input.branch,
+      );
     case "delete_file":
-      return deleteFile(input.path, input.message || `chore: delete ${input.path}`, input.branch);
+      return deleteFile(ensureString(input.path, "path"), input.message || `chore: delete ${input.path}`, input.branch);
     case "create_issue":
       return createIssue(input.title, input.body || "");
     case "list_issues":

@@ -15,6 +15,7 @@ import { Annotation } from "@langchain/langgraph";
  * @property {string=} error
  * @property {"read_file"|"list_directory"|"upsert_file"|"delete_file"|"create_issue"|"list_issues"|"comment_issue"|null=} toolAction
  * @property {Object<string, any>=} toolInput
+ * @property {{write: boolean, path: string, content: string, message: string, summary: string}=} generatedPatch
  */
 
 /**

@@ -92,8 +92,14 @@ export async function factCheck(state) {
     };
   } catch (error) {
     const message = `Fact check failed while reading repository: ${error.message}`;
-    console.log("[Planner.factCheck] end - failed", { error: message });
-    return { error: message };
+    console.log("[Planner.factCheck] end - degraded", { warning: message });
+    return {
+      error: null,
+      repoContext: {
+        ...state.repoContext,
+        factCheckWarning: message,
+      },
+    };
   }
 }
 

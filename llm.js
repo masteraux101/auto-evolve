@@ -17,12 +17,13 @@ function getApiKey() {
 async function callGemini(prompt, options = {}) {
   const apiKey = getApiKey();
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -45,6 +46,27 @@ async function callGemini(prompt, options = {}) {
   }
 
   return text;
+}
+
+function extractJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue to fenced JSON extraction below.
+  }
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    return JSON.parse(fenced[1]);
+  }
+
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    return JSON.parse(text.slice(first, last + 1));
+  }
+
+  throw new Error("Model did not return valid JSON content.");
 }
 
 /**
@@ -74,7 +96,7 @@ export async function generatePlan(userPrompt, newRequirements) {
   ].join("\n");
 
   const content = await callGemini(prompt, { responseMimeType: "application/json", temperature: 0.1 });
-  return JSON.parse(content);
+  return extractJson(content);
 }
 
 /**
@@ -85,8 +107,19 @@ export async function generatePlan(userPrompt, newRequirements) {
 export async function generateTaskOutput(taskTitle, taskDescription, repoContext = {}) {
   const prompt = [
     "You are a senior JavaScript engineer.",
-    "Generate concise implementation output in markdown with code blocks when needed.",
-    "Include what changed and why.",
+    "Return strict JSON only.",
+    "Schema:",
+    "{",
+    '  "write": true,',
+    '  "path": "src/example.js",',
+    '  "content": "full file content here",',
+    '  "message": "feat: implement ...",',
+    '  "summary": "what changed and why"',
+    "}",
+    "Rules:",
+    "- If task should not modify repository, set write=false and leave path/content empty strings.",
+    "- content must be the full target file content, no markdown fences.",
+    "- message must be a concise commit message.",
     "",
     `Task title: ${taskTitle}`,
     `Task description: ${taskDescription}`,
@@ -94,5 +127,6 @@ export async function generateTaskOutput(taskTitle, taskDescription, repoContext
     JSON.stringify(repoContext, null, 2),
   ].join("\n");
 
-  return callGemini(prompt, { temperature: 0.2 });
+  const content = await callGemini(prompt, { responseMimeType: "application/json", temperature: 0.2 });
+  return extractJson(content);
 }
