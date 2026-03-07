@@ -7,6 +7,14 @@ on:
         description: Prompt for planner/worker
         required: true
         type: string
+      target_repository:
+        description: Target repo in owner/repo format (defaults to current repo)
+        required: false
+        type: string
+      target_branch:
+        description: Target branch (defaults to current ref name)
+        required: false
+        type: string
       issue_number:
         description: Optional issue number for writeback
         required: false
@@ -35,9 +43,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-pro' }}
           GITHUB_TOKEN: ${{ secrets.AUTO_EVOLVE_GITHUB_PAT }}
-          TARGET_REPOSITORY: ${{ github.repository }}
-          TARGET_BRANCH: ${{ github.ref_name }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository || github.repository }}
+          TARGET_BRANCH: ${{ inputs.target_branch || github.ref_name }}
           USER_PROMPT: ${{ inputs.user_prompt }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
-          WRITE_BACK_TO_ISSUE: "true"
+          WRITE_BACK_TO_ISSUE: ${{ inputs.issue_number != '' }}
         run: npm start

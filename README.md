@@ -34,6 +34,20 @@ npm run dev
 npm start
 ```
 
+## Run in GitHub Actions
+
+Use the `local-auto-evolve` workflow with manual dispatch inputs:
+
+- `user_prompt`: required
+- `target_repository`: optional, `owner/repo` format. Defaults to current repo.
+- `target_branch`: optional. Defaults to current ref name.
+- `issue_number`: optional. If provided, result is written back to this issue.
+
+Make sure repo secrets exist:
+
+- `GEMINI_API_KEY`
+- `AUTO_EVOLVE_GITHUB_PAT`
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` and set values when needed:
