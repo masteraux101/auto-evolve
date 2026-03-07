@@ -1,11 +1,12 @@
-import { program } from 'commander';
-import { plan } from './planner.js';
-import { initializeState, saveState, getState } from './state.js';
-import { executePlan } from './worker.js';
-import { getCompletion } from './llm.js';
-import { getRepositoryContext } from './github-tools.js';
-import { createGraph, logGraph } from './graph.js';
-import { createPullRequest } from './src/github_tools.js';
+const { program } = require('commander');
+const { plan } = require('./planner');
+const { initializeState, saveState, getState } = require('./state');
+const { executePlan } = require('./worker');
+const { getCompletion } = require('./llm');
+const { getRepositoryContext } = require('./github-tools');
+const { createGraph, logGraph } = require('./graph');
+const { createPullRequest } = require('./src/github_tools');
+const { analyzeWorkflowLogs } = require('./src/githubService');
 
 async function main() {
   program
@@ -61,6 +62,21 @@ async function main() {
     .action(async (command) => {
       const result = await getCompletion(command);
       console.log(result);
+    });
+
+  program
+    .command('analyze-logs <runId>')
+    .description('Fetch and analyze logs from a GitHub Actions workflow run')
+    .action(async (runId) => {
+      try {
+        console.log(`Analyzing logs for workflow run ID: ${runId}...`);
+        const analysisResult = await analyzeWorkflowLogs(runId);
+        console.log('Log analysis complete:');
+        console.log(JSON.stringify(analysisResult, null, 2));
+      } catch (error) {
+        console.error(`Failed to analyze logs: ${error.message}`);
+        process.exit(1);
+      }
     });
 
   program
