@@ -1,253 +1,187 @@
-import process from "process";
-import { executeGithubTool } from "./github-tools.js";
-import { generateTaskOutput } from "./llm.js";
+const github = require('./github-tools');
+const llm = require('./llm');
+const state = require('./state');
+const planner = require('./planner');
+const fs = require('fs').promises;
+const path = require('path');
 
-function getCurrentTask(state) {
-  if (!state.currentTaskId) {
-    return undefined;
-  }
-  return state.tasks.find((task) => task.id === state.currentTaskId);
-}
-
-export async function workerTools(state) {
-  console.log("[Worker.workerTools] start", { currentTaskId: state.currentTaskId });
-
-  const task = getCurrentTask(state);
-  if (!task || !task.toolAction) {
-    console.log("[Worker.workerTools] end - no tool action on current task");
-    return {};
-  }
-
-  if (task.toolAction === "upsert_file" && !(task.toolInput?.path && task.toolInput?.content)) {
-    console.log("[Worker.workerTools] skip direct upsert - waiting for generated patch content");
-    return {};
-  }
-
+/**
+ * Executes a single task from the plan.
+ * @param {object} task - The task object to execute.
+ * @returns {Promise<any>} The result of the task execution.
+ */
+async function executeTask(task) {
+  console.log(`Executing task: ${task.id} - ${task.name} (${task.tool}.${task.action})`);
   try {
-    const result = await executeGithubTool(task.toolAction, task.toolInput || {});
-    console.log("[Worker.workerTools] end - tool executed", { action: task.toolAction });
+    let result;
+    const params = task.parameters || {};
 
-    return {
-      repoContext: {
-        ...state.repoContext,
-        [task.id]: result,
-      },
-      error: null,
-    };
+    switch (task.tool) {
+      case 'github':
+        result = await executeGitHubTool(task.action, params);
+        break;
+      case 'llm':
+        result = await executeLlmTool(task.action, params);
+        break;
+      case 'planner':
+        result = await executePlannerTool(task.action, params);
+        break;
+      case 'filesystem':
+        result = await executeFilesystemTool(task.action, params);
+        break;
+      case 'finish':
+        console.log(`Finish task received. Objective: ${params.message}`);
+        console.log('Agent has completed its goal.');
+        process.exit(0);
+      default:
+        throw new Error(`Unknown tool: ${task.tool}`);
+    }
+
+    console.log(`Task ${task.id} completed successfully.`);
+    await state.updateTask(task.id, { status: 'completed', result });
+    return result;
   } catch (error) {
-    const message = `Worker tool execution failed: ${error.message}`;
-    console.log("[Worker.workerTools] end - failed", { error: message });
-    return { error: message };
+    console.error(`Error executing task ${task.id}:`, error);
+    await state.updateTask(task.id, { status: 'failed', error: error.message });
+    throw error; // Re-throw to be handled by the main loop
   }
 }
 
-export async function generateCode(state) {
-  console.log("[Worker.generateCode] start", { currentTaskId: state.currentTaskId });
+/**
+ * Executes a GitHub-related action.
+ * @param {string} action - The specific GitHub action to perform.
+ * @param {object} params - The parameters for the action.
+ * @returns {Promise<any>} The result from the GitHub tool.
+ */
+async function executeGitHubTool(action, params) {
+  switch (action) {
+    case 'getIssue':
+      return github.getIssue(params);
+    case 'getIssues':
+      return github.getIssues(params);
+    case 'createComment':
+      return github.createComment(params);
+    case 'listFiles':
+      return github.listFiles(params);
+    case 'readFile':
+      return github.readFile(params);
+    case 'createCommit':
+      return github.createCommit(params);
+    case 'createPullRequest':
+        return github.createPullRequest(params);
+    default:
+      throw new Error(`Unknown GitHub action: ${action}`);
+  }
+}
 
-  const task = getCurrentTask(state);
-  if (!task) {
-    const message = "No current task found for code generation.";
-    console.log("[Worker.generateCode] end - failed", { error: message });
-    return { error: message };
+/**
+ * Executes an LLM-related action.
+ * @param {string} action - The specific LLM action to perform.
+ * @param {object} params - The parameters for the action.
+ * @returns {Promise<any>} The result from the LLM tool.
+ */
+async function executeLlmTool(action, params) {
+  const { prompt, options } = params;
+  switch (action) {
+    case 'generateCode':
+      return llm.generate(prompt, { temperature: 0.1, ...options });
+    case 'analyzeCode':
+      return llm.generate(prompt, { temperature: 0.3, ...options });
+    case 'summarize':
+        return llm.generate(prompt, { temperature: 0.5, ...options });
+    default:
+      throw new Error(`Unknown LLM action: ${action}`);
+  }
+}
+
+/**
+ * Executes a planner-related action.
+ * @param {string} action - The specific planner action to perform.
+ * @param {object} params - The parameters for the action.
+ * @returns {Promise<any>} The result from the planner tool.
+ */
+async function executePlannerTool(action, params) {
+  switch (action) {
+    case 'createPlan':
+      return planner.createPlan(params.objective);
+    case 'updatePlan':
+      return planner.updatePlan(params.objective, params.history);
+    default:
+      throw new Error(`Unknown planner action: ${action}`);
+  }
+}
+
+/**
+ * Executes a local filesystem action.
+ * @param {string} action - The specific filesystem action to perform.
+ * @param {object} params - The parameters for the action.
+ * @returns {Promise<any>} The result from the filesystem operation.
+ */
+async function executeFilesystemTool(action, params) {
+  // Ensure path is within the project directory to prevent traversal attacks
+  const safePath = path.resolve(process.cwd(), params.path);
+  if (!safePath.startsWith(process.cwd())) {
+      throw new Error(`Access to path '${params.path}' outside the working directory is not allowed.`);
   }
 
-  try {
-    const generated = await generateTaskOutput(task.title, task.description, state.repoContext || {});
-    const forceWrite = task.toolAction === "upsert_file";
+  switch (action) {
+    case 'readFile':
+      return fs.readFile(safePath, 'utf-8');
+    case 'writeFile':
+      await fs.mkdir(path.dirname(safePath), { recursive: true });
+      return fs.writeFile(safePath, params.content, 'utf-8');
+    case 'listFiles':
+      const dirents = await fs.readdir(safePath, { withFileTypes: true });
+      return dirents.map(dirent => ({
+          name: dirent.name,
+          type: dirent.isDirectory() ? 'dir' : 'file'
+      }));
+    default:
+      throw new Error(`Unknown filesystem action: ${action}`);
+  }
+}
 
-    const normalized = {
-      write: Boolean(generated?.write) || forceWrite,
-      path:
-        typeof generated?.path === "string" && generated.path.trim().length > 0
-          ? generated.path
-          : typeof task.toolInput?.path === "string"
-            ? task.toolInput.path
-            : "",
-      content: typeof generated?.content === "string" ? generated.content : "",
-      message: typeof generated?.message === "string" ? generated.message : `chore: update ${task.id}`,
-      summary: typeof generated?.summary === "string" ? generated.summary : "",
-    };
+/**
+ * The main loop for the worker. It continuously fetches and executes tasks.
+ */
+async function main() {
+  console.log('Worker process started.');
+  while (true) {
+    const task = await state.getNextTask();
+    if (task) {
+      try {
+        await executeTask(task);
+      } catch (e) {
+        // Error is already logged and state updated in executeTask
+        console.error(`Task ${task.id} failed in main loop. Continuing to next task.`);
+      }
+    } else {
+      console.log('No executable tasks found. Checking for completion...');
+      const allTasks = await state.getAllTasks();
+      const pendingTasks = allTasks.filter(t => ['pending', 'running'].includes(t.status));
+      
+      if (pendingTasks.length === 0 && allTasks.length > 0) {
+          console.log('All tasks are completed or failed. Worker is shutting down.');
+          break;
+      }
+      
+      console.log('Still pending tasks. Waiting for new tasks to become available...');
+      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before polling again
+    }
+  }
+}
 
-    const updatedTasks = state.tasks.map((item) =>
-      item.id === task.id
-        ? {
-            ...item,
-            output: normalized.summary || normalized.content,
-            generatedPatch: normalized,
-            error: undefined,
-          }
-        : item,
-    );
-
-    console.log("[Worker.generateCode] end", {
-      taskId: task.id,
-      write: normalized.write,
-      path: normalized.path,
-      contentLength: normalized.content.length,
+if (require.main === module) {
+    main().catch(err => {
+        console.error("Worker main loop crashed fatally:", err);
+        process.exit(1);
     });
-    return { tasks: updatedTasks, error: null };
-  } catch (error) {
-    const message = `Code generation failed: ${error.message}`;
-    console.log("[Worker.generateCode] end - failed", { error: message });
-    return { error: message };
-  }
 }
 
-export async function applyGeneratedPatch(state) {
-  console.log("[Worker.applyGeneratedPatch] start", { currentTaskId: state.currentTaskId });
-
-  const task = getCurrentTask(state);
-  if (!task) {
-    const message = "No current task found while applying generated patch.";
-    console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
-  }
-
-  const patch = task.generatedPatch;
-  if (!patch || !patch.write) {
-    console.log("[Worker.applyGeneratedPatch] end - no repository write requested");
-    return {};
-  }
-
-  if (!patch.path || !patch.content) {
-    const message = "Generated patch requested write but missing path/content.";
-    console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
-  }
-
-  try {
-    const result = await executeGithubTool("upsert_file", {
-      path: patch.path,
-      content: patch.content,
-      message: patch.message || `chore: upsert ${patch.path}`,
-      branch: process.env.TARGET_BRANCH,
-    });
-
-    const updatedTasks = state.tasks.map((item) =>
-      item.id === task.id
-        ? {
-            ...item,
-            toolAction: "upsert_file",
-            toolInput: {
-              path: patch.path,
-              message: patch.message,
-            },
-          }
-        : item,
-    );
-
-    console.log("[Worker.applyGeneratedPatch] end - upsert success", {
-      taskId: task.id,
-      path: patch.path,
-      commitSha: result.commitSha,
-    });
-
-    return {
-      tasks: updatedTasks,
-      repoContext: {
-        ...state.repoContext,
-        [`generatedPatch:${task.id}`]: result,
-      },
-      error: null,
-    };
-  } catch (error) {
-    const message = `Apply generated patch failed: ${error.message}`;
-    console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
-  }
-}
-
-export async function syntaxCheck(state) {
-  console.log("[Worker.syntaxCheck] start", { currentTaskId: state.currentTaskId });
-
-  const task = getCurrentTask(state);
-  if (!task || !task.output) {
-    const message = "No generated output available for syntax check.";
-    console.log("[Worker.syntaxCheck] end - failed", { error: message });
-    return {
-      syntaxOk: false,
-      error: message,
-    };
-  }
-
-  const syntaxOk = !task.output.includes("SYNTAX_ERROR");
-  const updatedTasks = state.tasks.map((item) =>
-    item.id === task.id ? { ...item, syntaxOk } : item,
-  );
-
-  console.log("[Worker.syntaxCheck] end", { taskId: task.id, syntaxOk });
-  return {
-    syntaxOk,
-    tasks: updatedTasks,
-    error: syntaxOk ? null : "Syntax check failed by marker.",
-  };
-}
-
-export async function runTests(state) {
-  console.log("[Worker.runTests] start", { currentTaskId: state.currentTaskId });
-
-  const task = getCurrentTask(state);
-  if (!task) {
-    const message = "No current task found for test run.";
-    console.log("[Worker.runTests] end - failed", { error: message });
-    return { error: message };
-  }
-
-  const relatedMilestone = state.milestones.find((ms) => ms.id === task.milestoneId);
-  const testNames = relatedMilestone?.tests ?? ["basic smoke test"];
-
-  const passed = Boolean(task.output) && state.syntaxOk;
-  const details = `${passed ? "PASS" : "FAIL"}: ${testNames.join(" | ")}`;
-
-  const updatedTasks = state.tasks.map((item) =>
-    item.id === task.id ? { ...item, testResult: { passed, details } } : item,
-  );
-
-  console.log("[Worker.runTests] end", { taskId: task.id, passed });
-  return {
-    tasks: updatedTasks,
-    error: passed ? null : "Milestone tests failed.",
-  };
-}
-
-export async function packageFeedback(state) {
-  console.log("[Worker.packageFeedback] start", { currentTaskId: state.currentTaskId });
-
-  const task = getCurrentTask(state);
-  if (!task) {
-    const message = "Cannot package feedback without an active task.";
-    console.log("[Worker.packageFeedback] end - failed", { error: message });
-    return {
-      workerFeedback: null,
-      currentTaskId: null,
-      error: message,
-    };
-  }
-
-  const passedTests = task.testResult?.passed ?? false;
-  const status = state.syntaxOk && passedTests ? "completed" : "failed";
-  const feedback = {
-    taskId: task.id,
-    status,
-    output: task.output,
-    syntaxOk: state.syntaxOk,
-    testResult: task.testResult,
-    error: status === "failed" ? task.error ?? "Syntax check or tests failed." : undefined,
-  };
-
-  console.log("[Worker.packageFeedback] end", { taskId: task.id, status: feedback.status });
-  return {
-    workerFeedback: feedback,
-    currentTaskId: null,
-  };
-}
-
-export async function routeAfterSyntaxCheck(state) {
-  if (!state.syntaxOk) {
-    console.log("[Worker.routeAfterSyntaxCheck] syntax failed -> package feedback");
-    return "package_feedback";
-  }
-
-  console.log("[Worker.routeAfterSyntaxCheck] syntax ok -> run tests");
-  return "run_tests";
-}
+module.exports = { 
+  executeTask,
+  executeGitHubTool,
+  executeLlmTool,
+  executePlannerTool,
+  executeFilesystemTool
+};
