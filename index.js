@@ -1,82 +1,95 @@
-import process from "process";
-import { buildFinalOutput, buildPlannerGraph } from "./graph.js";
-import { createInitialState } from "./state.js";
-
-function getUserPromptFromEnv() {
-  const explicitPrompt = process.env.USER_PROMPT;
-  if (explicitPrompt && explicitPrompt.trim().length > 0) {
-    return explicitPrompt.trim();
-  }
-
-  const issueTitle = process.env.ISSUE_TITLE ?? "";
-  const issueBody = process.env.ISSUE_BODY ?? "";
-  const merged = [issueTitle, issueBody].filter(Boolean).join("\n\n").trim();
-  return merged || "No prompt provided.";
-}
-
-async function postResultToGitHubIssue(issueNumber, body) {
-  const token = process.env.GITHUB_TOKEN;
-  const repository = process.env.TARGET_REPOSITORY || process.env.GITHUB_REPOSITORY;
-  if (!token || !repository) {
-    console.log("[Index] skip GitHub writeback - missing GITHUB_TOKEN or repository env");
-    return;
-  }
-
-  const [owner, repo] = repository.split("/");
-  if (!owner || !repo) {
-    console.log("[Index] skip GitHub writeback - invalid repository env");
-    return;
-  }
-
-  console.log("[Index] writing summary comment back to GitHub issue", { issueNumber });
-
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      "User-Agent": "auto-evolve-js-agent",
-    },
-    body: JSON.stringify({ body }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`GitHub comment failed (${response.status}): ${text}`);
-  }
-}
+const { program } = require('commander');
+const { plan } = require('./planner');
+const { initializeState, saveState, getState } = require('./state');
+const { executePlan } = require('./worker');
+const { getCompletion } = require('./llm');
+const { getRepositoryContext } = require('./github-tools');
+const { createGraph, logGraph } = require('./graph');
+const { createPullRequest } = require('./src/github_tools');
 
 async function main() {
-  const issueNumber = process.env.ISSUE_NUMBER ?? "manual";
-  const userPrompt = getUserPromptFromEnv();
+  program
+    .command('plan <task>')
+    .description('Plan a task')
+    .action(async (task) => {
+      console.log('Planning task:', task);
+      const state = await initializeState({ task });
+      const repoContext = await getRepositoryContext();
+      state.repoContext = repoContext;
+      saveState(state);
+      const planResult = await plan(task, state);
+      state.plan = planResult;
+      state.graph = createGraph(planResult);
+      saveState(state);
+      console.log('Plan created:');
+      console.dir(state.plan, { depth: null });
+      console.log('\nExecution graph:');
+      logGraph(state.graph);
+    });
 
-  console.log("[Index] start", {
-    issueNumber,
-    promptLength: userPrompt.length,
-    targetRepository: process.env.TARGET_REPOSITORY || process.env.GITHUB_REPOSITORY || "",
-  });
+  program
+    .command('execute')
+    .description('Execute the plan')
+    .action(async () => {
+      const state = getState();
+      if (!state || !state.plan) {
+        console.log('No plan found. Please run "plan" first.');
+        return;
+      }
+      console.log('Executing plan...');
+      await executePlan(state);
+      console.log('Plan executed.');
+    });
 
-  const graph = buildPlannerGraph();
-  const initialState = createInitialState();
-  initialState.userPrompt = userPrompt;
+  program
+    .command('step')
+    .description('Execute the next step of the plan')
+    .action(async () => {
+        const state = getState();
+        if (!state || !state.plan) {
+            console.log('No plan found. Please run "plan" first.');
+            return;
+        }
+        console.log('Executing next step...');
+        await executePlan(state, true); // Pass true for single step execution
+        console.log('Step executed.');
+    });
 
-  const finalState = await graph.invoke(initialState);
-  const summary = buildFinalOutput(finalState);
+  program
+    .command('shell <command>')
+    .description('Get a completion for a shell command')
+    .action(async (command) => {
+      const result = await getCompletion(command);
+      console.log(result);
+    });
 
-  console.log("[Index] final state summary\n", summary);
+  program
+    .command('pr')
+    .description('Create a pull request on GitHub')
+    .option('-t, --title <title>', 'Pull request title')
+    .option('-b, --body <body>', 'Pull request body', '')
+    .option('-h, --head <head>', 'The name of the branch where your changes are implemented')
+    .option('--base <base>', 'The name of the branch you want the changes pulled into')
+    .action(async (options) => {
+      const { title, body, head, base } = options;
+      if (!title || !head || !base) {
+        console.error('Error: --title, --head, and --base are required.');
+        process.exit(1);
+      }
+      try {
+        console.log(`Creating pull request from ${head} to ${base}...`);
+        const pr = await createPullRequest(title, body, head, base);
+        console.log(`Successfully created pull request: ${pr.html_url}`);
+      } catch (error) {
+        console.error(`Failed to create pull request: ${error.message}`);
+        process.exit(1);
+      }
+    });
 
-  const writeBackEnabled = process.env.WRITE_BACK_TO_ISSUE === "true";
-  if (writeBackEnabled && issueNumber !== "manual") {
-    const body = ["## Planner/Worker Agent Run Result", "", "```json", summary, "```"].join("\n");
-    await postResultToGitHubIssue(issueNumber, body);
-    console.log("[Index] GitHub issue comment posted");
-  }
-
-  console.log("[Index] done");
+  await program.parseAsync(process.argv);
 }
 
-main().catch((error) => {
-  console.error("[Index] fatal error", error);
-  process.exitCode = 1;
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
 });
