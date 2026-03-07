@@ -1,118 +1,84 @@
-const { Octokit } = require('@octokit/rest');
-const { throttling } = require("@octokit/plugin-throttling");
+const { Octokit } = require("@octokit/rest");
+const axios = require('axios');
+const AdmZip = require('adm-zip');
 
-const MyOctokit = Octokit.plugin(throttling);
-
-// Ensure GITHUB_TOKEN and GITHUB_REPOSITORY are set
-if (!process.env.GITHUB_TOKEN) {
-    throw new Error('GITHUB_TOKEN environment variable is not set.');
-}
-if (!process.env.GITHUB_REPOSITORY) {
-    throw new Error('GITHUB_REPOSITORY environment variable is not set (e.g., "owner/repo").');
-}
-
-const octokit = new MyOctokit({
+const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN,
-  throttle: {
-    onRateLimit: (retryAfter, options, octokit, retryCount) => {
-      octokit.log.warn(
-        `Request quota exhausted for request ${options.method} ${options.url}`
-      );
-
-      if (retryCount < 1) {
-        // only retry once
-        octokit.log.info(`Retrying after ${retryAfter} seconds!`);
-        return true;
-      }
-    },
-    onSecondaryRateLimit: (retryAfter, options, octokit) => {
-      // does not retry, only logs a warning
-      octokit.log.warn(
-        `SecondaryRateLimit detected for request ${options.method} ${options.url}`
-      );
-    },
-  },
 });
 
-const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+// A placeholder for getting repo info. In a real app, this would parse .git/config or use an env var.
+function getRepoInfo() {
+    // This is a placeholder. A real implementation would be more robust,
+    // for example, using a library to parse `git remote -v`.
+    // We'll use the owner/repo from the repository context for now.
+    return { owner: 'masteraux101', repo: 'auto-evolve' };
+}
 
 /**
- * Fetches the logs for a specific workflow run.
- * The logs are returned as a buffer containing a zip archive.
- * @param {number} runId The ID of the workflow run.
- * @returns {Promise<Buffer>} A buffer with the zipped log files.
+ * Fetches and concatenates the logs from the most recent failed GitHub Actions workflow run.
+ * @returns {Promise<string|null>} A string containing all log files, or null if no failed runs are found or an error occurs.
  */
-async function getWorkflowRunLogs(runId) {
+async function getLatestWorkflowLogs() {
+  const { owner, repo } = getRepoInfo();
+
+  if (!owner || !repo) {
+    console.error("Could not determine repository owner and name. Please configure it.");
+    return null;
+  }
+
   try {
-    const response = await octokit.rest.actions.downloadWorkflowRunLogs({
+    console.log(`Fetching workflow runs for ${owner}/${repo}...`);
+    const { data: { workflow_runs } } = await octokit.actions.listWorkflowRunsForRepo({
       owner,
       repo,
-      run_id: runId,
+      status: 'completed',
     });
-    // response.data is an ArrayBuffer
-    return Buffer.from(response.data);
+
+    const failedRun = workflow_runs.find(run => run.conclusion === 'failure');
+
+    if (!failedRun) {
+      console.log("No recent failed workflow runs found.");
+      return null;
+    }
+
+    console.log(`Found latest failed run: ID ${failedRun.id}, Title: "${failedRun.display_title}"`);
+
+    const { url } = await octokit.actions.downloadWorkflowRunLogs({
+      owner,
+      repo,
+      run_id: failedRun.id,
+    });
+
+    console.log(`Downloading logs from redirect...`);
+    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    const zipBuffer = Buffer.from(response.data);
+
+    const zip = new AdmZip(zipBuffer);
+    const zipEntries = zip.getEntries();
+    let allLogs = "";
+
+    zipEntries.forEach(entry => {
+      if (!entry.isDirectory && entry.name.endsWith('.log')) {
+        const logContent = zip.readAsText(entry);
+        allLogs += `--- Log file: ${entry.entryName} ---\n\n`;
+        allLogs += logContent;
+        allLogs += "\n\n";
+      }
+    });
+
+    console.log("Successfully fetched and processed workflow logs.");
+    return allLogs.trim();
+
   } catch (error) {
-    console.error(`Error fetching workflow run logs for run ID ${runId}:`, error);
-    throw error;
+    console.error("Error fetching workflow logs:", error.message);
+    if (error.response) {
+      console.error("GitHub API response status:", error.response.status);
+      console.error("Response data:", error.response.data);
+    }
+    return null;
   }
 }
 
-/**
- * Creates a pull request.
- * @param {string} title The title of the pull request.
- * @param {string} head The name of the branch where your changes are implemented.
- * @param {string} base The name of the branch you want the changes pulled into.
- * @param {string} [body=''] The body of the pull request.
- * @returns {Promise<object>} The created pull request object.
- */
-async function createPullRequest(title, head, base, body = '') {
-    try {
-        const response = await octokit.rest.pulls.create({
-            owner,
-            repo,
-            title,
-            head,
-            base,
-            body,
-        });
-        return response.data;
-    } catch (error) {
-        console.error('Error creating pull request:', error);
-        throw error;
-    }
-}
-
-/**
- * Fetches context from the GitHub repository, such as open issues.
- * @returns {Promise<object>} An object containing repository context.
- */
-async function getRepositoryContext() {
-    try {
-        const { data: issues } = await octokit.rest.issues.listForRepo({
-            owner,
-            repo,
-            state: 'open',
-        });
-        return {
-            openIssues: issues.map(issue => ({
-                number: issue.number,
-                title: issue.title,
-                state: issue.state,
-                url: issue.html_url,
-            })),
-        };
-    } catch (error) {
-        console.error('Error fetching repository context:', error);
-        throw error;
-    }
-}
-
-
 module.exports = {
-  getWorkflowRunLogs,
-  createPullRequest,
-  getRepositoryContext,
-  octokit,
-  owner,
-  repo,
+  getLatestWorkflowLogs,
 };
