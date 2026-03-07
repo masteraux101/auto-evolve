@@ -1,0 +1,43 @@
+name: local-auto-evolve
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_prompt:
+        description: Prompt for planner/worker
+        required: true
+        type: string
+      issue_number:
+        description: Optional issue number for writeback
+        required: false
+        type: string
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run planner/worker
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-pro' }}
+          GITHUB_TOKEN: ${{ secrets.AUTO_EVOLVE_GITHUB_PAT }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_BRANCH: ${{ github.ref_name }}
+          USER_PROMPT: ${{ inputs.user_prompt }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          WRITE_BACK_TO_ISSUE: "true"
+        run: npm start

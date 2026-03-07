@@ -1,0 +1,27 @@
+{
+  "name": "auto-evovle",
+  "version": "0.1.0",
+  "description": "Planner/Worker JS agent based on LangGraph with GitHub CRUD tools",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node --watch index.js",
+    "start": "node index.js",
+    "deploy:repo": "node scripts/deploy-to-repo.js",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "langgraph",
+    "javascript",
+    "agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@langchain/langgraph": "^0.2.74",
+    "tweetsodium": "^0.0.6"
+  }
+}
