@@ -1,0 +1,1 @@
+// The worker will replace this with the corrected CommonJS code after reading the original file.
