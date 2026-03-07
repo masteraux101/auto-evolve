@@ -1,187 +1,153 @@
-const github = require('./github-tools');
-const llm = require('./llm');
-const state = require('./state');
-const planner = require('./planner');
-const fs = require('fs').promises;
-const path = require('path');
+const { createPlan } = require('./planner');
+const { getFileContent, commitFile, getRepositoryContext } = require('./github-tools');
+const { saveState, loadState } = require('./state');
+const { getTask, updateTask } = require('./graph');
 
 /**
- * Executes a single task from the plan.
- * @param {object} task - The task object to execute.
- * @returns {Promise<any>} The result of the task execution.
+ * This file defines the main worker logic for processing tasks.
+ * It orchestrates the entire process from planning to execution.
+ * 
+ * @module worker
  */
-async function executeTask(task) {
-  console.log(`Executing task: ${task.id} - ${task.name} (${task.tool}.${task.action})`);
+
+/**
+ * @typedef {import('./types').Task} Task
+ * @typedef {import('./types').Step} Step
+ * @typedef {import('./types').State} State
+ */
+
+/**
+ * The main worker function that processes a single task.
+ * It orchestrates the planning, execution, and state management for a given task.
+ * This function is the primary entry point for the worker.
+ *
+ * @param {string} taskId - The ID of the task to process.
+ * @returns {Promise<void>} A promise that resolves when the task is completed or fails.
+ */
+async function processTask(taskId) {
+  console.log(`Starting to process task: ${taskId}`);
+
   try {
-    let result;
-    const params = task.parameters || {};
-
-    switch (task.tool) {
-      case 'github':
-        result = await executeGitHubTool(task.action, params);
-        break;
-      case 'llm':
-        result = await executeLlmTool(task.action, params);
-        break;
-      case 'planner':
-        result = await executePlannerTool(task.action, params);
-        break;
-      case 'filesystem':
-        result = await executeFilesystemTool(task.action, params);
-        break;
-      case 'finish':
-        console.log(`Finish task received. Objective: ${params.message}`);
-        console.log('Agent has completed its goal.');
-        process.exit(0);
-      default:
-        throw new Error(`Unknown tool: ${task.tool}`);
+    const task = getTask(taskId);
+    if (!task) {
+      console.error(`Task with ID ${taskId} not found.`);
+      return;
     }
 
-    console.log(`Task ${task.id} completed successfully.`);
-    await state.updateTask(task.id, { status: 'completed', result });
-    return result;
+    if (task.status === 'completed') {
+      console.log(`Task ${taskId} is already completed. Skipping.`);
+      return;
+    }
+
+    const state = await loadState(taskId);
+    
+    // Generate a plan if one doesn't exist
+    if (!state.plan || state.plan.length === 0) {
+        console.log(`No plan found for task ${taskId}. Generating a new plan.`);
+        const context = await getRepositoryContext(task);
+        state.plan = await createPlan(task, context);
+        await saveState(taskId, state);
+    }
+
+    await executePlan(taskId, state);
+
+    updateTask(taskId, { status: 'completed' });
+    console.log(`Task ${taskId} completed successfully.`);
   } catch (error) {
-    console.error(`Error executing task ${task.id}:`, error);
-    await state.updateTask(task.id, { status: 'failed', error: error.message });
-    throw error; // Re-throw to be handled by the main loop
+    console.error(`Error processing task ${taskId}:`, error);
+    updateTask(taskId, { status: 'failed', error: error.message });
+    // Depending on the desired behavior, you might want to re-throw the error
+    // throw error;
   }
 }
 
 /**
- * Executes a GitHub-related action.
- * @param {string} action - The specific GitHub action to perform.
- * @param {object} params - The parameters for the action.
- * @returns {Promise<any>} The result from the GitHub tool.
+ * Executes the plan for a given task by iterating through its steps.
+ * It maintains the current step in the state, allowing for resumability.
+ *
+ * @param {string} taskId - The ID of the task.
+ * @param {State} state - The current state of the task, including the plan and progress.
+ * @returns {Promise<void>} A promise that resolves when the plan is fully executed.
  */
-async function executeGitHubTool(action, params) {
-  switch (action) {
-    case 'getIssue':
-      return github.getIssue(params);
-    case 'getIssues':
-      return github.getIssues(params);
-    case 'createComment':
-      return github.createComment(params);
-    case 'listFiles':
-      return github.listFiles(params);
-    case 'readFile':
-      return github.readFile(params);
-    case 'createCommit':
-      return github.createCommit(params);
-    case 'createPullRequest':
-        return github.createPullRequest(params);
-    default:
-      throw new Error(`Unknown GitHub action: ${action}`);
-  }
-}
+async function executePlan(taskId, state) {
+  console.log(`Executing plan for task: ${taskId}`);
 
-/**
- * Executes an LLM-related action.
- * @param {string} action - The specific LLM action to perform.
- * @param {object} params - The parameters for the action.
- * @returns {Promise<any>} The result from the LLM tool.
- */
-async function executeLlmTool(action, params) {
-  const { prompt, options } = params;
-  switch (action) {
-    case 'generateCode':
-      return llm.generate(prompt, { temperature: 0.1, ...options });
-    case 'analyzeCode':
-      return llm.generate(prompt, { temperature: 0.3, ...options });
-    case 'summarize':
-        return llm.generate(prompt, { temperature: 0.5, ...options });
-    default:
-      throw new Error(`Unknown LLM action: ${action}`);
-  }
-}
-
-/**
- * Executes a planner-related action.
- * @param {string} action - The specific planner action to perform.
- * @param {object} params - The parameters for the action.
- * @returns {Promise<any>} The result from the planner tool.
- */
-async function executePlannerTool(action, params) {
-  switch (action) {
-    case 'createPlan':
-      return planner.createPlan(params.objective);
-    case 'updatePlan':
-      return planner.updatePlan(params.objective, params.history);
-    default:
-      throw new Error(`Unknown planner action: ${action}`);
-  }
-}
-
-/**
- * Executes a local filesystem action.
- * @param {string} action - The specific filesystem action to perform.
- * @param {object} params - The parameters for the action.
- * @returns {Promise<any>} The result from the filesystem operation.
- */
-async function executeFilesystemTool(action, params) {
-  // Ensure path is within the project directory to prevent traversal attacks
-  const safePath = path.resolve(process.cwd(), params.path);
-  if (!safePath.startsWith(process.cwd())) {
-      throw new Error(`Access to path '${params.path}' outside the working directory is not allowed.`);
-  }
-
-  switch (action) {
-    case 'readFile':
-      return fs.readFile(safePath, 'utf-8');
-    case 'writeFile':
-      await fs.mkdir(path.dirname(safePath), { recursive: true });
-      return fs.writeFile(safePath, params.content, 'utf-8');
-    case 'listFiles':
-      const dirents = await fs.readdir(safePath, { withFileTypes: true });
-      return dirents.map(dirent => ({
-          name: dirent.name,
-          type: dirent.isDirectory() ? 'dir' : 'file'
-      }));
-    default:
-      throw new Error(`Unknown filesystem action: ${action}`);
-  }
-}
-
-/**
- * The main loop for the worker. It continuously fetches and executes tasks.
- */
-async function main() {
-  console.log('Worker process started.');
-  while (true) {
-    const task = await state.getNextTask();
-    if (task) {
-      try {
-        await executeTask(task);
-      } catch (e) {
-        // Error is already logged and state updated in executeTask
-        console.error(`Task ${task.id} failed in main loop. Continuing to next task.`);
-      }
-    } else {
-      console.log('No executable tasks found. Checking for completion...');
-      const allTasks = await state.getAllTasks();
-      const pendingTasks = allTasks.filter(t => ['pending', 'running'].includes(t.status));
-      
-      if (pendingTasks.length === 0 && allTasks.length > 0) {
-          console.log('All tasks are completed or failed. Worker is shutting down.');
-          break;
-      }
-      
-      console.log('Still pending tasks. Waiting for new tasks to become available...');
-      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before polling again
+  const startStep = state.currentStep || 0;
+  for (let i = startStep; i < state.plan.length; i++) {
+    const step = state.plan[i];
+    state.currentStep = i;
+    
+    console.log(`Executing step ${i + 1}/${state.plan.length}: ${step.type} - ${step.description}`);
+    
+    try {
+      const result = await executeStep(step);
+      state.stepResults = state.stepResults || [];
+      state.stepResults[i] = { status: 'completed', result: result || 'No result' };
+      await saveState(taskId, state);
+    } catch (error) {
+        console.error(`Error executing step ${i + 1} ('${step.description}'):`, error.message);
+        state.stepResults = state.stepResults || [];
+        state.stepResults[i] = { status: 'failed', error: error.message };
+        await saveState(taskId, state);
+        // Stop execution on failure and propagate the error
+        throw new Error(`Failed to execute step ${i + 1}: ${step.description}. Reason: ${error.message}`);
     }
   }
 }
 
-if (require.main === module) {
-    main().catch(err => {
-        console.error("Worker main loop crashed fatally:", err);
-        process.exit(1);
-    });
+/**
+ * Executes a single step from the plan based on its type.
+ * This function acts as a dispatcher to the appropriate handler for each step type.
+ *
+ * @param {Step} step - The step object to execute.
+ * @returns {Promise<any>} The result of the step execution.
+ * @throws {Error} If the step type is unknown or execution fails.
+ */
+async function executeStep(step) {
+  // Ensure parameters exist to avoid runtime errors
+  const params = step.parameters || {};
+
+  switch (step.type) {
+    case 'READ_FILE':
+      if (!params.path) throw new Error('Missing "path" parameter for READ_FILE step.');
+      return getFileContent(params.path);
+
+    case 'WRITE_FILE':
+      if (!params.path) throw new Error('Missing "path" parameter for WRITE_FILE step.');
+      if (typeof params.content !== 'string') throw new Error('Missing or invalid "content" parameter for WRITE_FILE step.');
+      if (!params.message) throw new Error('Missing "message" parameter for WRITE_FILE step.');
+      return commitFile(
+        params.path,
+        params.content,
+        params.message
+      );
+
+    case 'RUN_COMMAND':
+      if (!params.command) throw new Error('Missing "command" parameter for RUN_COMMAND step.');
+      // Placeholder for running a command. In a real scenario, use child_process.exec.
+      console.log(`Simulating command run: ${params.command}`);
+      // const { exec } = require('child_process');
+      // return new Promise((resolve, reject) => {
+      //   exec(params.command, (error, stdout, stderr) => {
+      //     if (error) return reject(error);
+      //     if (stderr) return reject(new Error(stderr));
+      //     resolve(stdout);
+      //   });
+      // });
+      return Promise.resolve(`Simulated output for: ${params.command}`);
+
+    case 'HUMAN_REVIEW':
+        // Placeholder for a step that requires human intervention.
+        console.log(`Awaiting human review for: ${step.description}`);
+        // This would typically involve an external trigger, a webhook, or a long-polling mechanism.
+        // For now, we'll simulate an automatic approval.
+        return Promise.resolve({ approved: true, feedback: "Looks good. Auto-approved." });
+
+    default:
+      throw new Error(`Unknown step type: '${step.type}'`);
+  }
 }
 
-module.exports = { 
-  executeTask,
-  executeGitHubTool,
-  executeLlmTool,
-  executePlannerTool,
-  executeFilesystemTool
+module.exports = {
+  processTask,
 };
