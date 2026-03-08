@@ -1,0 +1,5 @@
+{
+  "repo_owner": "your-github-username",
+  "repo_name": "your-repo-name",
+  "base_branch": "dev"
+}
