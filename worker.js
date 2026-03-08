@@ -1,153 +1,181 @@
-const { createPlan } = require('./planner');
-const { getFileContent, commitFile, getRepositoryContext } = require('./github-tools');
-const { saveState, loadState } = require('./state');
-const { getTask, updateTask } = require('./graph');
+const { exec } = require('child_process');
+const { 
+    listDirectory, 
+    readFile, 
+    writeFile, 
+    createCommit,
+    getIssue,
+    getOpenIssues,
+    createIssueComment,
+    getRepoContext
+} = require('./github-tools');
+const { updateState, getState } = require('./state');
+const { getLLMResponse } = require('./llm');
 
-/**
- * This file defines the main worker logic for processing tasks.
- * It orchestrates the entire process from planning to execution.
- * 
- * @module worker
- */
-
-/**
- * @typedef {import('./types').Task} Task
- * @typedef {import('./types').Step} Step
- * @typedef {import('./types').State} State
- */
-
-/**
- * The main worker function that processes a single task.
- * It orchestrates the planning, execution, and state management for a given task.
- * This function is the primary entry point for the worker.
- *
- * @param {string} taskId - The ID of the task to process.
- * @returns {Promise<void>} A promise that resolves when the task is completed or fails.
- */
-async function processTask(taskId) {
-  console.log(`Starting to process task: ${taskId}`);
-
-  try {
-    const task = getTask(taskId);
-    if (!task) {
-      console.error(`Task with ID ${taskId} not found.`);
-      return;
-    }
-
-    if (task.status === 'completed') {
-      console.log(`Task ${taskId} is already completed. Skipping.`);
-      return;
-    }
-
-    const state = await loadState(taskId);
-    
-    // Generate a plan if one doesn't exist
-    if (!state.plan || state.plan.length === 0) {
-        console.log(`No plan found for task ${taskId}. Generating a new plan.`);
-        const context = await getRepositoryContext(task);
-        state.plan = await createPlan(task, context);
-        await saveState(taskId, state);
-    }
-
-    await executePlan(taskId, state);
-
-    updateTask(taskId, { status: 'completed' });
-    console.log(`Task ${taskId} completed successfully.`);
-  } catch (error) {
-    console.error(`Error processing task ${taskId}:`, error);
-    updateTask(taskId, { status: 'failed', error: error.message });
-    // Depending on the desired behavior, you might want to re-throw the error
-    // throw error;
-  }
+// A more robust command execution function
+async function executeCommand(command) {
+    console.log(`Executing command: $ ${command}`);
+    return new Promise((resolve) => {
+        exec(command, { timeout: 15000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`exec error: ${error}`);
+                const result = {
+                    success: false,
+                    stdout: stdout,
+                    stderr: `Error: ${error.message}\nStderr: ${stderr}`
+                };
+                resolve(result);
+                return;
+            }
+            if (stderr) {
+                console.warn(`Command stderr:\n${stderr}`);
+            }
+            const result = { success: true, stdout, stderr };
+            resolve(result);
+        });
+    });
 }
 
-/**
- * Executes the plan for a given task by iterating through its steps.
- * It maintains the current step in the state, allowing for resumability.
- *
- * @param {string} taskId - The ID of the task.
- * @param {State} state - The current state of the task, including the plan and progress.
- * @returns {Promise<void>} A promise that resolves when the plan is fully executed.
- */
-async function executePlan(taskId, state) {
-  console.log(`Executing plan for task: ${taskId}`);
+async function executeTool(action, parameters) {
+    console.log(`Executing tool: ${action}`);
+    if (parameters && Object.keys(parameters).length > 0) {
+        console.log(`With parameters: ${JSON.stringify(parameters, null, 2)}`);
+    }
 
-  const startStep = state.currentStep || 0;
-  for (let i = startStep; i < state.plan.length; i++) {
-    const step = state.plan[i];
-    state.currentStep = i;
-    
-    console.log(`Executing step ${i + 1}/${state.plan.length}: ${step.type} - ${step.description}`);
-    
     try {
-      const result = await executeStep(step);
-      state.stepResults = state.stepResults || [];
-      state.stepResults[i] = { status: 'completed', result: result || 'No result' };
-      await saveState(taskId, state);
+        switch (action) {
+            // Filesystem/Repo tools
+            case 'list_directory':
+                if (!parameters.path) throw new Error("'path' parameter is required.");
+                return await listDirectory(parameters.path);
+
+            case 'read_file':
+                if (!parameters.path) throw new Error("'path' parameter is required.");
+                return await readFile(parameters.path);
+
+            case 'write_file_and_commit':
+                const { path, content, message, summary } = parameters;
+                if (!path || content === undefined || !message || !summary) {
+                    throw new Error("'path', 'content', 'message', and 'summary' parameters are required.");
+                }
+                const state = getState();
+                const { targetRepository, targetBranch } = state;
+                const [owner, repo] = targetRepository.split('/');
+                
+                console.log(`Committing to ${owner}/${repo} on branch ${targetBranch}`);
+                
+                const commitResult = await createCommit({
+                    owner,
+                    repo,
+                    branch: targetBranch,
+                    changes: [{ path, content }],
+                    message: `${message}\n\n${summary}`
+                });
+
+                console.log('Commit successful:', commitResult);
+                return { success: true, commit: commitResult };
+
+            // Command execution
+            case 'execute_command':
+                if (!parameters.command) throw new Error("'command' parameter is required.");
+                return await executeCommand(parameters.command);
+            
+            // GitHub specific tools
+            case 'get_issue':
+                if (!parameters.issue_number) throw new Error("'issue_number' parameter is required.");
+                return await getIssue(parameters.issue_number);
+
+            case 'get_open_issues':
+                return await getOpenIssues();
+
+            case 'create_issue_comment':
+                if (!parameters.issue_number) throw new Error("'issue_number' parameter is required.");
+                if (!parameters.comment) throw new Error("'comment' parameter is required.");
+                return await createIssueComment(parameters.issue_number, parameters.comment);
+
+            // LLM/Reasoning tools
+            case 'ask_llm':
+                if (!parameters.prompt) throw new Error("'prompt' parameter is required.");
+                return await getLLMResponse(parameters.prompt, parameters.context);
+
+            // Control flow
+            case 'final_answer':
+                console.log("Final answer received:", parameters.answer);
+                // This action signals the end of a task. The main loop will handle this.
+                return { success: true, finalAnswer: parameters.answer };
+
+            default:
+                console.error(`Unknown action: ${action}`);
+                return { success: false, error: `Unknown action: ${action}` };
+        }
     } catch (error) {
-        console.error(`Error executing step ${i + 1} ('${step.description}'):`, error.message);
-        state.stepResults = state.stepResults || [];
-        state.stepResults[i] = { status: 'failed', error: error.message };
-        await saveState(taskId, state);
-        // Stop execution on failure and propagate the error
-        throw new Error(`Failed to execute step ${i + 1}: ${step.description}. Reason: ${error.message}`);
+        console.error(`Error executing tool '${action}':`, error);
+        return { 
+            success: false, 
+            error: `Failed to execute tool '${action}': ${error.message}`,
+            stack: error.stack
+        };
     }
-  }
 }
 
-/**
- * Executes a single step from the plan based on its type.
- * This function acts as a dispatcher to the appropriate handler for each step type.
- *
- * @param {Step} step - The step object to execute.
- * @returns {Promise<any>} The result of the step execution.
- * @throws {Error} If the step type is unknown or execution fails.
- */
-async function executeStep(step) {
-  // Ensure parameters exist to avoid runtime errors
-  const params = step.parameters || {};
+async function run(plan) {
+    console.log("Worker starting to execute plan...");
+    // Enhanced validation for the plan object
+    if (!plan || typeof plan !== 'object' || !Array.isArray(plan.steps) || plan.steps.length === 0) {
+        const errorMsg = `Plan is invalid. It must be an object with a non-empty 'steps' array. Received: ${JSON.stringify(plan)}`;
+        console.error(errorMsg);
+        await updateState({ status: 'failed', error: errorMsg });
+        return { success: false, error: errorMsg };
+    }
 
-  switch (step.type) {
-    case 'READ_FILE':
-      if (!params.path) throw new Error('Missing "path" parameter for READ_FILE step.');
-      return getFileContent(params.path);
+    let lastToolResult = null;
 
-    case 'WRITE_FILE':
-      if (!params.path) throw new Error('Missing "path" parameter for WRITE_FILE step.');
-      if (typeof params.content !== 'string') throw new Error('Missing or invalid "content" parameter for WRITE_FILE step.');
-      if (!params.message) throw new Error('Missing "message" parameter for WRITE_FILE step.');
-      return commitFile(
-        params.path,
-        params.content,
-        params.message
-      );
+    for (const [index, step] of plan.steps.entries()) {
+        // Enhanced validation for each step
+        if (!step || typeof step !== 'object' || !step.action) {
+            const errorMsg = `Step ${index} is invalid or missing 'action'. Step: ${JSON.stringify(step)}`;
+            console.error(errorMsg);
+            await updateState({ status: 'failed', error: errorMsg });
+            return { success: false, error: errorMsg };
+        }
 
-    case 'RUN_COMMAND':
-      if (!params.command) throw new Error('Missing "command" parameter for RUN_COMMAND step.');
-      // Placeholder for running a command. In a real scenario, use child_process.exec.
-      console.log(`Simulating command run: ${params.command}`);
-      // const { exec } = require('child_process');
-      // return new Promise((resolve, reject) => {
-      //   exec(params.command, (error, stdout, stderr) => {
-      //     if (error) return reject(error);
-      //     if (stderr) return reject(new Error(stderr));
-      //     resolve(stdout);
-      //   });
-      // });
-      return Promise.resolve(`Simulated output for: ${params.command}`);
+        console.log(`\n[Step ${index + 1}/${plan.steps.length}] Executing: ${step.action}`);
+        if (step.thought) {
+            console.log(`Thought: ${step.thought}`);
+        }
 
-    case 'HUMAN_REVIEW':
-        // Placeholder for a step that requires human intervention.
-        console.log(`Awaiting human review for: ${step.description}`);
-        // This would typically involve an external trigger, a webhook, or a long-polling mechanism.
-        // For now, we'll simulate an automatic approval.
-        return Promise.resolve({ approved: true, feedback: "Looks good. Auto-approved." });
+        const toolResult = await executeTool(step.action, step.parameters || {});
+        
+        // Avoid overly verbose logging for large results like file contents
+        const resultToLog = { ...toolResult };
+        if (resultToLog && typeof resultToLog.content === 'string' && resultToLog.content.length > 200) {
+            resultToLog.content = resultToLog.content.substring(0, 200) + '... (truncated)';
+        }
+        console.log("Tool result:", JSON.stringify(resultToLog, null, 2));
+        
+        if (toolResult && toolResult.success === false) {
+            const errorMsg = `Worker failed on action '${step.action}'. Reason: ${toolResult.error}`;
+            console.error(`Step failed. Stopping execution. Error: ${toolResult.error}`);
+            await updateState({
+                status: 'failed',
+                error: errorMsg,
+                lastToolResult: toolResult
+            });
+            return { success: false, error: errorMsg, details: toolResult };
+        }
 
-    default:
-      throw new Error(`Unknown step type: '${step.type}'`);
-  }
+        lastToolResult = toolResult;
+        await updateState({ lastToolResult });
+
+        if (step.action === 'final_answer') {
+            console.log("`final_answer` received. Ending worker execution for this plan.");
+            break;
+        }
+    }
+
+    console.log("\nWorker finished executing plan successfully.");
+    await updateState({ status: 'completed', finalResult: lastToolResult });
+    return { success: true, finalResult: lastToolResult };
 }
 
-module.exports = {
-  processTask,
-};
+module.exports = { run, executeTool };
