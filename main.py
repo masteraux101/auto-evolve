@@ -1,0 +1,3 @@
+# Main application entry point.
+# Existing CLI code...
+# Add new command for 'auto-pr' that calls the workflow from src/features/auto_pr.py
