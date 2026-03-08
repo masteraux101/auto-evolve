@@ -30,10 +30,10 @@ The agent will analyze the codebase, plan the necessary changes, and apply them.
 
 #### Configuration
 
-To enable this feature, you must set the `GITHUB_TOKEN` environment variable. This token is used to authenticate with the GitHub API.
+To enable this feature, you must set the `GITHUB_API_TOKEN` environment variable. This token is used to authenticate with the GitHub API.
 
 ```bash
-export GITHUB_TOKEN=your_personal_access_token
+export GITHUB_API_TOKEN=your_personal_access_token
 ```
 
 The token needs `repo` scope to create pull requests in your repository.
