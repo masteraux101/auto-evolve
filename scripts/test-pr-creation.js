@@ -13,19 +13,20 @@ const TARGET_BRANCH = "dev";
 const POLL_INTERVAL_MS = 8000;
 const MAX_WAIT_MS = 15 * 60 * 1000;
 
+// Instruction to trigger PR creation feature
+const PR_CREATION_PROMPT =
+  "Implement a new feature to automatically create pull requests via GitHub API. " +
+  "The feature should: 1) Generate a meaningful commit with code changes, " +
+  "2) Create a new branch from dev, 3) Push changes to the branch, " +
+  "4) Create a pull request to merge back into dev with descriptive title and body. " +
+  "Report the PR number and URL in the task output.";
+
 function getToken() {
   const token = process.env.GITHUB_TOKEN || process.env.GH_PAT;
   if (!token) {
     throw new Error("Missing GITHUB_TOKEN or GH_PAT in .env");
   }
   return token;
-}
-
-function getPrompt() {
-  if (process.env.USER_PROMPT && process.env.USER_PROMPT.trim()) {
-    return process.env.USER_PROMPT.trim();
-  }
-  return "Run planner/worker on dev code and write output to dev-gened branch, then report failures.";
 }
 
 async function githubRequest(path, { method = "GET", body, token, accept } = {}) {
@@ -35,7 +36,7 @@ async function githubRequest(path, { method = "GET", body, token, accept } = {})
       Authorization: `Bearer ${token}`,
       Accept: accept || "application/vnd.github+json",
       "Content-Type": "application/json",
-      "User-Agent": "auto-evolve-trigger-analyzer",
+      "User-Agent": "auto-evolve-pr-test",
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -53,7 +54,7 @@ async function githubRequest(path, { method = "GET", body, token, accept } = {})
 }
 
 async function triggerWorkflow(token) {
-  console.log("[1/5] Triggering workflow_dispatch...");
+  console.log("[1/6] Triggering workflow_dispatch with PR creation prompt...");
   const startedAt = new Date().toISOString();
 
   await githubRequest(
@@ -64,7 +65,7 @@ async function triggerWorkflow(token) {
       body: {
         ref: SOURCE_REF,
         inputs: {
-          user_prompt: getPrompt(),
+          user_prompt: PR_CREATION_PROMPT,
           target_repository: `${OWNER}/${REPO}`,
           target_branch: TARGET_BRANCH,
           issue_number: "",
@@ -74,29 +75,39 @@ async function triggerWorkflow(token) {
   );
 
   console.log(`[ok] Workflow dispatched on ref=${SOURCE_REF}, target_branch=${TARGET_BRANCH}`);
+  console.log(`[ok] Prompt: "${PR_CREATION_PROMPT.substring(0, 80)}..."`);
   return startedAt;
 }
 
 async function findTriggeredRun(token, startedAt) {
-  console.log("[2/5] Locating the newly triggered run...");
+  console.log("[2/6] Locating the newly triggered run...");
   const startTime = Date.now();
+  let attemptCount = 0;
 
   while (Date.now() - startTime < MAX_WAIT_MS) {
+    attemptCount++;
     const runs = await githubRequest(
-      `/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&branch=${SOURCE_REF}&per_page=10`,
+      `/repos/${OWNER}/${REPO}/actions/runs?event=workflow_dispatch&branch=${SOURCE_REF}&per_page=20`,
       { token },
     );
 
-    const candidate = (runs.workflow_runs || []).find(
-      (run) => run.created_at >= startedAt,
+    const sortedRuns = (runs.workflow_runs || []).sort((a, b) => 
+      new Date(b.created_at) - new Date(a.created_at)
+    );
+
+    const candidate = sortedRuns.find(
+      (run) => new Date(run.created_at) >= new Date(startedAt),
     );
 
     if (candidate) {
-      console.log(`[ok] Run found: #${candidate.run_number} id=${candidate.id}`);
+      console.log(`[ok] Run found on attempt ${attemptCount}: #${candidate.run_number} id=${candidate.id}`);
       console.log(`     URL: ${candidate.html_url}`);
       return candidate;
     }
 
+    if (attemptCount <= 3) {
+      console.log(`     [attempt ${attemptCount}] no new run yet, retrying...`);
+    }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 
@@ -104,7 +115,7 @@ async function findTriggeredRun(token, startedAt) {
 }
 
 async function waitForRunCompletion(token, runId) {
-  console.log("[3/5] Waiting for run completion...");
+  console.log("[3/6] Waiting for run completion...");
   const startTime = Date.now();
 
   while (Date.now() - startTime < MAX_WAIT_MS) {
@@ -131,7 +142,7 @@ async function downloadJobLog(token, jobId) {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
-      "User-Agent": "auto-evolve-trigger-analyzer",
+      "User-Agent": "auto-evolve-pr-test",
     },
     redirect: "follow",
   });
@@ -151,27 +162,8 @@ function extractErrorLines(logText) {
   );
 }
 
-function summarizeIssues(jobSummaries) {
-  const issueHints = [];
-  const allErrorText = jobSummaries
-    .flatMap((job) => job.errorLines)
-    .join("\n");
-
-  if (/require is not defined in ES module scope/i.test(allErrorText)) {
-    issueHints.push("ESM/CommonJS mixed usage still exists (require used under type=module).");
-  }
-  if (/Cannot find package|ERR_MODULE_NOT_FOUND/i.test(allErrorText)) {
-    issueHints.push("Missing dependency or wrong import path in runtime environment.");
-  }
-  if (/Process completed with exit code 1/i.test(allErrorText)) {
-    issueHints.push("Workflow exits hard on first runtime error; add preflight checks and graceful diagnostics.");
-  }
-
-  return issueHints;
-}
-
 async function analyzeRunLogs(token, runId) {
-  console.log("[4/5] Fetching jobs and logs...");
+  console.log("[4/6] Fetching jobs and logs...");
   const jobsPayload = await githubRequest(
     `/repos/${OWNER}/${REPO}/actions/runs/${runId}/jobs?per_page=20`,
     { token },
@@ -183,9 +175,10 @@ async function analyzeRunLogs(token, runId) {
   for (const job of jobs) {
     console.log(`     job: ${job.name} -> ${job.conclusion || job.status}`);
     let errorLines = [];
+    let fullLog = "";
     try {
-      const logText = await downloadJobLog(token, job.id);
-      errorLines = extractErrorLines(logText).slice(0, 30);
+      fullLog = await downloadJobLog(token, job.id);
+      errorLines = extractErrorLines(fullLog).slice(0, 15);
     } catch (error) {
       errorLines = [`Log download failed: ${error.message}`];
     }
@@ -197,15 +190,47 @@ async function analyzeRunLogs(token, runId) {
       conclusion: job.conclusion,
       htmlUrl: job.html_url,
       errorLines,
+      fullLog,
     });
   }
 
   return summaries;
 }
 
-function printReport(run, jobSummaries) {
-  console.log("[5/5] Analysis report");
-  console.log("----------------------------------------");
+async function checkForCreatedPRs(token, sinceTime) {
+  console.log("[5/6] Checking for newly created pull requests...");
+  
+  const prs = await githubRequest(
+    `/repos/${OWNER}/${REPO}/pulls?state=all&per_page=10`,
+    { token },
+  );
+
+  const newPRs = (prs || []).filter(pr => {
+    const prCreatedAt = new Date(pr.created_at);
+    return prCreatedAt >= new Date(sinceTime);
+  });
+
+  if (newPRs.length === 0) {
+    console.log("[!] No new PRs detected since workflow started");
+    return [];
+  }
+
+  console.log(`[ok] Found ${newPRs.length} new PR(s):`);
+  for (const pr of newPRs) {
+    console.log(
+      `     PR #${pr.number}: "${pr.title}"`
+        + ` (${pr.head.ref} -> ${pr.base.ref})`
+    );
+    console.log(`     URL: ${pr.html_url}`);
+    console.log(`     State: ${pr.state}, Merged: ${pr.merged}`);
+  }
+
+  return newPRs;
+}
+
+function printReport(run, jobSummaries, createdPRs) {
+  console.log("[6/6] Final report");
+  console.log("========================================");
   console.log(`Run: #${run.run_number} (id=${run.id})`);
   console.log(`Branch(ref): ${run.head_branch}`);
   console.log(`Status: ${run.status}`);
@@ -213,26 +238,41 @@ function printReport(run, jobSummaries) {
   console.log(`URL: ${run.html_url}`);
   console.log("----------------------------------------");
 
+  console.log("\n📋 Job Summary:");
   for (const job of jobSummaries) {
-    console.log(`Job: ${job.name}`);
-    console.log(`  conclusion: ${job.conclusion || job.status}`);
-    if (job.errorLines.length === 0) {
-      console.log("  errors: none detected");
-    } else {
-      console.log("  key error lines:");
-      for (const line of job.errorLines.slice(0, 10)) {
-        console.log(`    ${line}`);
+    console.log(`  • ${job.name}: ${job.conclusion || job.status}`);
+    if (job.errorLines.length > 0) {
+      console.log("    ⚠️  Errors found:");
+      for (const line of job.errorLines.slice(0, 5)) {
+        console.log(`       ${line.substring(0, 120)}`);
       }
     }
   }
 
-  const hints = summarizeIssues(jobSummaries);
-  if (hints.length > 0) {
-    console.log("----------------------------------------");
-    console.log("Likely issues to fix:");
-    for (const hint of hints) {
-      console.log(`- ${hint}`);
+  console.log("\n🔍 PR Creation Result:");
+  if (createdPRs.length === 0) {
+    console.log("  ❌ NO PULL REQUESTS CREATED");
+    console.log("     (Expected: PR creation feature should have generated at least 1 PR)");
+  } else {
+    console.log(`  ✅ ${createdPRs.length} PULL REQUEST(S) CREATED`);
+    for (const pr of createdPRs) {
+      console.log(`     • PR #${pr.number}: ${pr.title}`);
+      console.log(`       ${pr.head.ref} → ${pr.base.ref}`);
     }
+  }
+
+  console.log("========================================");
+  
+  // Final verdict
+  if (run.conclusion === "success" && createdPRs.length > 0) {
+    console.log("\n✨ TEST PASSED: Workflow succeeded and PR(s) were created!");
+    return 0;
+  } else if (run.conclusion === "success" && createdPRs.length === 0) {
+    console.log("\n⚠️  TEST PARTIAL: Workflow succeeded but NO PRs created");
+    return 1;
+  } else {
+    console.log("\n❌ TEST FAILED: Workflow did not succeed");
+    return 1;
   }
 }
 
@@ -242,14 +282,13 @@ async function main() {
   const triggeredRun = await findTriggeredRun(token, startedAt);
   const completedRun = await waitForRunCompletion(token, triggeredRun.id);
   const jobSummaries = await analyzeRunLogs(token, completedRun.id);
-  printReport(completedRun, jobSummaries);
+  const createdPRs = await checkForCreatedPRs(token, startedAt);
+  const exitCode = printReport(completedRun, jobSummaries, createdPRs);
 
-  if (completedRun.conclusion !== "success") {
-    process.exitCode = 1;
-  }
+  process.exitCode = exitCode;
 }
 
 main().catch((error) => {
-  console.error("Script failed:", error.message);
+  console.error("❌ Script failed:", error.message);
   process.exit(1);
 });
