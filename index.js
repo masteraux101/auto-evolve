@@ -54,7 +54,9 @@ async function main() {
   const state = createInitialState();
   state.userPrompt = getUserPromptFromEnv();
 
-  const result = await graph.invoke(state);
+  const result = await graph.invoke(state, {
+    recursionLimit: Number(process.env.GRAPH_RECURSION_LIMIT || 200),
+  });
   const output = buildFinalOutput(result);
 
   console.log("[Index] final output:");
