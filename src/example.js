@@ -1,132 +1,80 @@
-const { Octokit } = require("@octokit/rest");
-const simpleGit = require("simple-git");
-const yargs = require("yargs/yargs");
-const { hideBin } = require("yargs/helpers");
-const fs = require("fs").promises;
-const path = require("path");
+// Assuming these modules exist and export the necessary classes/functions.
+const GitHandler = require('./git_handler'); // Manages git operations
+const GitHubService = require('./github_service'); // Manages GitHub API interactions
 
 /**
- * Main function to orchestrate the creation of a pull request.
- * It handles git operations (branch, add, commit, push) and
- * GitHub API calls (create PR).
+ * Main workflow to orchestrate the creation of a pull request with specified changes.
+ * This function integrates the Git handler for local repository operations and
+ * the GitHub service for interacting with the GitHub API.
+ *
+ * @param {object} options - The options for the workflow.
+ * @param {string} options.baseBranch - The branch to create the new branch from (e.g., 'dev').
+ * @param {string} options.newBranchName - The name for the new branch.
+ * @param {string} options.commitMessage - The commit message for the changes.
+ * @param {string} options.prTitle - The title of the pull request.
+ * @param {string} options.prBody - The body/description of the pull request.
+ * @param {Array<object>} options.fileChanges - An array of file changes to apply.
+ * @param {string} options.fileChanges[].path - The path of the file to change.
+ * @param {string} options.fileChanges[].content - The new content of the file.
+ * @returns {Promise<object>} A promise that resolves to an object containing the PR number and URL.
  */
-async function main() {
-    const argv = yargs(hideBin(process.argv))
-        .usage("Usage: $0 [options]")
-        .option("file-path", {
-            type: "string",
-            demandOption: true,
-            description: "Path of the file to create/update relative to repo root.",
-        })
-        .option("file-content", {
-            type: "string",
-            demandOption: true,
-            description: "Full content of the file.",
-        })
-        .option("branch-name", {
-            type: "string",
-            demandOption: true,
-            description: "Name of the new git branch.",
-        })
-        .option("commit-message", {
-            type: "string",
-            demandOption: true,
-            description: "Commit message for the changes.",
-        })
-        .option("pr-title", {
-            type: "string",
-            demandOption: true,
-            description: "Title of the pull request.",
-        })
-        .option("pr-body", {
-            type: "string",
-            demandOption: true,
-            description: "Body/description of the pull request.",
-        })
-        .option("repo-path", {
-            type: "string",
-            default: ".",
-            description: "Local path to the git repository.",
-        })
-        .option("repo-name", {
-            type: "string",
-            description: "GitHub repository name in 'owner/repo' format.",
-        })
-        .option("base-branch", {
-            type: "string",
-            default: "main",
-            description: "The branch to merge into.",
-        })
-        .help()
-        .argv;
+async function createPullRequestWorkflow(options) {
+  const {
+    baseBranch,
+    newBranchName,
+    commitMessage,
+    prTitle,
+    prBody,
+    fileChanges,
+  } = options;
 
-    const repoName = argv.repoName || process.env.GITHUB_REPOSITORY;
-    if (!repoName) {
-        console.error("Error: Repository name must be provided via --repo-name or GITHUB_REPOSITORY env var.");
-        process.exit(1);
-    }
+  // These would be initialized with necessary configuration,
+  // such as repository path, authentication tokens, etc.
+  const gitHandler = new GitHandler();
+  const githubService = new GitHubService();
 
-    const githubToken = process.env.GITHUB_TOKEN;
-    if (!githubToken) {
-        console.error("Error: GITHUB_TOKEN environment variable is not set.");
-        process.exit(1);
-    }
+  try {
+    console.log(`Starting PR creation workflow. Target branch: '${newBranchName}'`);
 
-    const [owner, repo] = repoName.split('/');
-    if (!owner || !repo) {
-        console.error("Error: Invalid repository name format. Expected 'owner/repo'.");
-        process.exit(1);
-    }
+    // 1. Call the Git handler to create and push a new branch with changes.
+    console.log(`Step 1: Creating and pushing branch with changes...`);
+    await gitHandler.createAndPushBranchWithChanges({
+      baseBranch,
+      newBranchName,
+      commitMessage,
+      fileChanges,
+    });
+    console.log(`Successfully pushed changes to branch '${newBranchName}'.`);
 
-    try {
-        // Step 1: Handle Git operations
-        console.log(`Initializing git in '${argv.repoPath}'...`);
-        const git = simpleGit(argv.repoPath);
+    // 2. Call the GitHub service to create the pull request.
+    console.log(`Step 2: Creating pull request on GitHub...`);
+    const pullRequest = await githubService.createPullRequest({
+      title: prTitle,
+      body: prBody,
+      head: newBranchName,
+      base: baseBranch,
+    });
+    console.log(`Successfully created pull request #${pullRequest.number}.`);
 
-        console.log(`Creating and checking out new branch '${argv.branchName}'...`);
-        await git.checkoutLocalBranch(argv.branchName);
+    // 3. Report the resulting PR number and URL.
+    const result = {
+      success: true,
+      prNumber: pullRequest.number,
+      prUrl: pullRequest.html_url,
+    };
 
-        const fullPath = path.resolve(argv.repoPath, argv.filePath);
-        console.log(`Writing content to '${fullPath}'...`);
-        await fs.mkdir(path.dirname(fullPath), { recursive: true });
-        await fs.writeFile(fullPath, argv.fileContent);
+    console.log(`\n--- Workflow Complete ---`);
+    console.log(`Pull Request URL: ${result.prUrl}`);
+    console.log(`-------------------------\n`);
 
-        console.log(`Adding '${argv.filePath}' to the index...`);
-        await git.add(argv.filePath);
-
-        console.log(`Committing changes with message: \"${argv.commitMessage}\"...`);
-        await git.commit(argv.commitMessage);
-
-        console.log(`Pushing branch '${argv.branchName}' to origin...`);
-        await git.push("origin", argv.branchName, ["--set-upstream"]);
-
-        // Step 2: Handle GitHub operations
-        console.log("Initializing GitHub client...");
-        const octokit = new Octokit({ auth: githubToken });
-
-        console.log(`Creating pull request: \"${argv.prTitle}\"...`);
-        const { data: pullRequest } = await octokit.pulls.create({
-            owner,
-            repo,
-            title: argv.prTitle,
-            body: argv.prBody,
-            head: argv.branchName,
-            base: argv.baseBranch,
-        });
-
-        console.log("\n✅ Successfully created Pull Request!");
-        console.log(`  Number: ${pullRequest.number}`);
-        console.log(`  URL: ${pullRequest.html_url}`);
-
-    } catch (error) {
-        console.error(`\n❌ An error occurred during the workflow:`);
-        console.error(error);
-        // Note: No automatic cleanup is performed on failure.
-        // The local branch will still exist.
-        process.exit(1);
-    }
+    return result;
+  } catch (error) {
+    console.error('Error in PR creation workflow:', error);
+    // Re-throw the error to allow the caller to handle it.
+    throw new Error(`Failed to create pull request: ${error.message}`);
+  }
 }
 
-if (require.main === module) {
-    main();
-}
+module.exports = {
+  createPullRequestWorkflow,
+};
