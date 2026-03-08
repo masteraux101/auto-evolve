@@ -20,39 +20,54 @@ async function callGemini(prompt, options = {}) {
   const apiKey = getApiKey();
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const maxAttempts = 5;
 
-  console.log(`[LLM] Calling Gemini API with model: ${model}, prompt length: ${prompt.length} chars`);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    console.log(
+      `[LLM] Calling Gemini API with model: ${model}, prompt length: ${prompt.length} chars, attempt ${attempt}/${maxAttempts}`,
+    );
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
-    },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: options.temperature ?? 0.2,
-        responseMimeType: options.responseMimeType,
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
       },
-    }),
-  });
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: options.temperature ?? 0.2,
+          responseMimeType: options.responseMimeType,
+        },
+      }),
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    console.error(`[LLM] Gemini API request failed with status ${response.status}:`, text);
-    throw new Error(`Gemini API failed (${response.status}): ${text}`);
+    if (response.ok) {
+      const payload = await response.json();
+      const text = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n")?.trim();
+      if (!text) {
+        console.error("[LLM] Gemini API returned empty content");
+        throw new Error("Gemini API returned empty content.");
+      }
+
+      console.log(`[LLM] Successfully received response, length: ${text.length} chars`);
+      return text;
+    }
+
+    const bodyText = await response.text();
+    const retryable = response.status === 429 || response.status === 503 || response.status >= 500;
+    console.error(`[LLM] Gemini API request failed with status ${response.status}:`, bodyText);
+
+    if (!retryable || attempt === maxAttempts) {
+      throw new Error(`Gemini API failed (${response.status}): ${bodyText}`);
+    }
+
+    const waitMs = 1000 * 2 ** (attempt - 1);
+    console.log(`[LLM] Retryable failure, backing off for ${waitMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  const payload = await response.json();
-  const text = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n")?.trim();
-  if (!text) {
-    console.error("[LLM] Gemini API returned empty content");
-    throw new Error("Gemini API returned empty content.");
-  }
-
-  console.log(`[LLM] Successfully received response, length: ${text.length} chars`);
-  return text;
+  throw new Error("Gemini API request did not complete successfully.");
 }
 
 function extractJson(text) {

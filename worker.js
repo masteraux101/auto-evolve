@@ -21,7 +21,7 @@ export async function workerTools(state) {
   if (!task) {
     const message = "Current task not found in state.";
     console.log("[Worker.workerTools] end - failed", { error: message });
-    return { error: message };
+    return {};
   }
 
   if (!task.toolAction) {
@@ -46,22 +46,21 @@ export async function workerTools(state) {
   } catch (error) {
     const message = `Worker tool execution failed: ${error.message}`;
     console.log("[Worker.workerTools] end - failed", { error: message });
-    return { error: message };
+    const tasks = updateTask(state.tasks, task.id, (item) => ({
+      ...item,
+      error: message,
+    }));
+    return { tasks };
   }
 }
 
 export async function generateCode(state) {
   console.log("[Worker.generateCode] start", { taskId: state.currentTaskId });
-  if (state.error) {
-    console.log("[Worker.generateCode] end - blocked by error", { error: state.error });
-    return {};
-  }
-
   const task = getCurrentTask(state);
   if (!task) {
     const message = "Current task not found for code generation.";
     console.log("[Worker.generateCode] end - failed", { error: message });
-    return { error: message };
+    return {};
   }
 
   try {
@@ -93,34 +92,43 @@ export async function generateCode(state) {
 
     return {
       tasks,
-      error: null,
     };
   } catch (error) {
     const message = `Code generation failed: ${error.message}`;
     console.log("[Worker.generateCode] end - failed", { error: message });
-    return { error: message };
+    const tasks = updateTask(state.tasks, task.id, (item) => ({
+      ...item,
+      generatedPatch: {
+        write: false,
+        path: "",
+        content: "",
+        message: "",
+        summary: message,
+      },
+      error: message,
+    }));
+    return { tasks };
   }
 }
 
 export async function applyGeneratedPatch(state) {
   console.log("[Worker.applyGeneratedPatch] start", { taskId: state.currentTaskId });
-  if (state.error) {
-    console.log("[Worker.applyGeneratedPatch] end - blocked by error", { error: state.error });
-    return {};
-  }
-
   const task = getCurrentTask(state);
   if (!task) {
     const message = "Current task not found for patch application.";
     console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
+    return {};
   }
 
   const patch = task.generatedPatch;
   if (!patch) {
     const message = "Generated patch missing before apply step.";
     console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
+    const tasks = updateTask(state.tasks, task.id, (item) => ({
+      ...item,
+      error: message,
+    }));
+    return { tasks };
   }
 
   if (!patch.write) {
@@ -132,14 +140,17 @@ export async function applyGeneratedPatch(state) {
     console.log("[Worker.applyGeneratedPatch] end - write skipped", { taskId: task.id });
     return {
       tasks,
-      error: null,
     };
   }
 
   if (!patch.path || !patch.message || typeof patch.content !== "string") {
     const message = "Generated patch is invalid for repository write.";
     console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
+    const tasks = updateTask(state.tasks, task.id, (item) => ({
+      ...item,
+      error: message,
+    }));
+    return { tasks };
   }
 
   try {
@@ -168,28 +179,25 @@ export async function applyGeneratedPatch(state) {
         ...state.repoContext,
         lastWriteResult: result,
       },
-      error: null,
     };
   } catch (error) {
     const message = `Patch application failed: ${error.message}`;
     console.log("[Worker.applyGeneratedPatch] end - failed", { error: message });
-    return { error: message };
+    const tasks = updateTask(state.tasks, task.id, (item) => ({
+      ...item,
+      error: message,
+    }));
+    return { tasks };
   }
 }
 
 export async function syntaxCheck(state) {
   console.log("[Worker.syntaxCheck] start", { taskId: state.currentTaskId });
-  if (state.error) {
-    console.log("[Worker.syntaxCheck] end - failed due to previous error");
-    return { syntaxOk: false };
-  }
-
   const task = getCurrentTask(state);
   if (!task) {
     console.log("[Worker.syntaxCheck] end - failed", { error: "Current task not found." });
     return {
       syntaxOk: false,
-      error: "Current task not found during syntax check.",
     };
   }
 
@@ -198,14 +206,12 @@ export async function syntaxCheck(state) {
     console.log("[Worker.syntaxCheck] end - failed", { error: "Empty JavaScript content." });
     return {
       syntaxOk: false,
-      error: "Generated JavaScript content is empty.",
     };
   }
 
   console.log("[Worker.syntaxCheck] end - passed", { taskId: task.id });
   return {
     syntaxOk: true,
-    error: null,
   };
 }
 
@@ -221,15 +227,6 @@ export async function routeAfterSyntaxCheck(state) {
 
 export async function runTests(state) {
   console.log("[Worker.runTests] start", { taskId: state.currentTaskId });
-  if (state.error) {
-    return {
-      repoContext: {
-        ...state.repoContext,
-        testResult: { passed: false, details: state.error },
-      },
-    };
-  }
-
   const result = {
     passed: true,
     details: "No local test suite configured. Basic worker flow validation passed.",
@@ -261,7 +258,7 @@ export async function packageFeedback(state) {
     };
   }
 
-  const finalError = state.error || null;
+  const finalError = task.error || null;
   const syntaxOk = state.syntaxOk && !finalError;
   const testResult = state.repoContext?.testResult || {
     passed: syntaxOk,
