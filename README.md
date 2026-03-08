@@ -2,12 +2,17 @@
 
 ## Automatic Pull Request Creation
 
-This feature automates the creation of pull requests. 
+This feature allows for the automatic creation of a pull request via the command line.
 
 ### Configuration
-Set the following environment variables:
-- `GITHUB_TOKEN`: Your personal access token.
-- `GITHUB_REPOSITORY`: The repository in `owner/repo` format.
+
+Export your GitHub Personal Access Token:
+```bash
+export GITHUB_TOKEN='your_token_here'
+```
 
 ### Usage
-`python create_pr.py --title "My Feature" --body "Description of changes."`
+
+```bash
+python main.py auto-pr --title "feat: New awesome feature" --body "This PR implements..."
+```
