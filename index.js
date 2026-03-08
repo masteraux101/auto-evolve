@@ -84,6 +84,72 @@ async function createAndSubmitPR(result) {
     await createBranch(owner, repo, featureBranch, targetBranch);
     console.log(`[Index] feature branch created: ${featureBranch}`);
 
+    // Create at least one dummy commit to make the PR valid
+    // Get the latest commit SHA from the base branch to use as parent
+    const branchRef = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${targetBranch}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+        },
+      }
+    ).then(r => r.json());
+
+    if (!branchRef.object || !branchRef.object.sha) {
+      throw new Error("Failed to get base branch ref");
+    }
+
+    const baseSha = branchRef.object.sha;
+
+    // Create a dummy commit with workflow summary
+    const commitMessage = `Auto-Evolve: Generated Implementation\n\n${buildFinalOutput(result).substring(0, 200)}`;
+    const commitTree = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/commits/${baseSha}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+        },
+      }
+    ).then(r => r.json()).then(c => c.tree.sha);
+
+    const newCommit = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/commits`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: commitMessage,
+          tree: commitTree,
+          parents: [baseSha],
+        }),
+      }
+    ).then(r => r.json());
+
+    // Update feature branch to point to new commit
+    await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${featureBranch}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sha: newCommit.sha,
+          force: false,
+        }),
+      }
+    );
+
+    console.log(`[Index] added commit to feature branch: ${newCommit.sha.substring(0, 7)}`);
+
     // Create pull request
     const prTitle = `Auto-Evolve: Generated Implementation (${new Date().toLocaleDateString()})`;
     const tasksSummary = result.tasks
