@@ -1,7 +1,8 @@
-const { Octokit } = require("@octokit/rest");
-const axios = require('axios');
-const AdmZip = require('adm-zip');
+import { Octokit } from "@octokit/rest";
+import axios from 'axios';
+import AdmZip from 'adm-zip';
 
+console.log("[githubService] Initializing with GITHUB_TOKEN");
 const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN,
 });
@@ -79,6 +80,70 @@ async function getLatestWorkflowLogs() {
   }
 }
 
-module.exports = {
+/**
+ * Analyzes logs for a specific workflow run ID
+ * @param {string} runId - The workflow run ID to analyze
+ * @returns {Promise<object>} - Analysis results
+ */
+async function analyzeWorkflowLogs(runId) {
+  console.log(`[githubService] Analyzing workflow logs for run ID: ${runId}`);
+  const { owner, repo } = getRepoInfo();
+
+  if (!owner || !repo) {
+    throw new Error("Could not determine repository owner and name.");
+  }
+
+  try {
+    const { data: run } = await octokit.actions.getWorkflowRun({
+      owner,
+      repo,
+      run_id: runId,
+    });
+
+    console.log(`[githubService] Found workflow run: ${run.name}, status: ${run.status}, conclusion: ${run.conclusion}`);
+
+    const { url } = await octokit.actions.downloadWorkflowRunLogs({
+      owner,
+      repo,
+      run_id: runId,
+    });
+
+    console.log(`[githubService] Downloading logs from: ${url}`);
+    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    const zipBuffer = Buffer.from(response.data);
+
+    const zip = new AdmZip(zipBuffer);
+    const zipEntries = zip.getEntries();
+    const logFiles = [];
+
+    zipEntries.forEach(entry => {
+      if (!entry.isDirectory && entry.name.endsWith('.log')) {
+        const logContent = zip.readAsText(entry);
+        logFiles.push({
+          name: entry.entryName,
+          content: logContent
+        });
+      }
+    });
+
+    console.log(`[githubService] Processed ${logFiles.length} log files`);
+
+    return {
+      runId,
+      runName: run.name,
+      status: run.status,
+      conclusion: run.conclusion,
+      createdAt: run.created_at,
+      htmlUrl: run.html_url,
+      logFiles,
+    };
+  } catch (error) {
+    console.error(`[githubService] Error analyzing workflow logs:`, error.message);
+    throw error;
+  }
+}
+
+export {
   getLatestWorkflowLogs,
+  analyzeWorkflowLogs,
 };

@@ -1,12 +1,12 @@
-const { program } = require('commander');
-const { plan } = require('./planner');
-const { initializeState, saveState, getState } = require('./state');
-const { executePlan } = require('./worker');
-const { getCompletion } = require('./llm');
-const { getRepositoryContext } = require('./github-tools');
-const { createGraph, logGraph } = require('./graph');
-const { createPullRequest } = require('./src/github_tools');
-const { analyzeWorkflowLogs } = require('./src/githubService');
+import { program } from 'commander';
+import { plan } from './planner.js';
+import { initializeState, saveState, getState } from './state.js';
+import { executePlan } from './worker.js';
+import { getCompletion } from './llm.js';
+import { getRepositoryContext } from './github-tools.js';
+import { createGraph, logGraph } from './graph.js';
+import { createPullRequest } from './src/github_tools.js';
+import { analyzeWorkflowLogs } from './src/githubService.js';
 
 async function main() {
   program

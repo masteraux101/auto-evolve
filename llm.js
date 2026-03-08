@@ -5,8 +5,10 @@ const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-pro";
 function getApiKey() {
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
+    console.error("[LLM] GEMINI_API_KEY is not set in environment variables");
     throw new Error("Missing GEMINI_API_KEY.");
   }
+  console.log("[LLM] API key found, using model:", process.env.GEMINI_MODEL || DEFAULT_MODEL);
   return key;
 }
 
@@ -18,6 +20,8 @@ async function callGemini(prompt, options = {}) {
   const apiKey = getApiKey();
   const model = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  console.log(`[LLM] Calling Gemini API with model: ${model}, prompt length: ${prompt.length} chars`);
 
   const response = await fetch(url, {
     method: "POST",
@@ -36,15 +40,18 @@ async function callGemini(prompt, options = {}) {
 
   if (!response.ok) {
     const text = await response.text();
+    console.error(`[LLM] Gemini API request failed with status ${response.status}:`, text);
     throw new Error(`Gemini API failed (${response.status}): ${text}`);
   }
 
   const payload = await response.json();
   const text = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n")?.trim();
   if (!text) {
+    console.error("[LLM] Gemini API returned empty content");
     throw new Error("Gemini API returned empty content.");
   }
 
+  console.log(`[LLM] Successfully received response, length: ${text.length} chars`);
   return text;
 }
 

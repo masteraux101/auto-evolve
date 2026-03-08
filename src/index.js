@@ -1,4 +1,4 @@
-const { StateGraph } = require("@langchain/langgraph");
+import { StateGraph } from "@langchain/langgraph";
 
 // This is a placeholder for the agent state
 const agentState = {
@@ -15,4 +15,4 @@ const workflow = new StateGraph({
 
 // TODO: Define nodes and edges for the graph
 
-module.exports = workflow;
+export default workflow;

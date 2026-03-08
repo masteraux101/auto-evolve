@@ -15,13 +15,16 @@ function getRepoConfig() {
   const repository = process.env.TARGET_REPOSITORY || process.env.GITHUB_REPOSITORY;
 
   if (!token) {
+    console.error("[GitHub Tools] Missing GITHUB_TOKEN (or GH_PAT) environment variable");
     throw new Error("Missing GITHUB_TOKEN (or GH_PAT).");
   }
   if (!repository || !repository.includes("/")) {
+    console.error("[GitHub Tools] Missing or invalid TARGET_REPOSITORY/GITHUB_REPOSITORY");
     throw new Error("Missing or invalid TARGET_REPOSITORY/GITHUB_REPOSITORY (owner/repo).");
   }
 
   const [owner, repo] = repository.split("/");
+  console.log(`[GitHub Tools] Using repository: ${owner}/${repo}`);
   return { token, owner, repo, repository };
 }
 
@@ -29,6 +32,8 @@ async function githubRequest(path, options = {}) {
   const { token } = getRepoConfig();
   const maxAttempts = 3;
   let lastError;
+
+  console.log(`[GitHub Tools] API request: ${options.method || "GET"} ${path}`);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const response = await fetch(`https://api.github.com${path}`, {
@@ -44,12 +49,15 @@ async function githubRequest(path, options = {}) {
 
     if (response.ok) {
       if (response.status === 204) {
+        console.log(`[GitHub Tools] Request successful: ${path} (204 No Content)`);
         return {};
       }
+      console.log(`[GitHub Tools] Request successful: ${path} (${response.status})`);
       return response.json();
     }
 
     const text = await response.text();
+    console.error(`[GitHub Tools] Request failed: ${path} (${response.status}), attempt ${attempt}/${maxAttempts}`);
     const error = new GitHubApiError(
       `GitHub API failed (${response.status}) ${path}: ${text}`,
       response.status,
@@ -70,11 +78,13 @@ async function githubRequest(path, options = {}) {
         (response.status === 403 && (remaining === 0 || /rate limit/i.test(text))));
 
     if (!shouldRetry) {
+      console.error(`[GitHub Tools] Request failed permanently: ${path}`);
       throw error;
     }
 
     lastError = error;
     const waitMs = retryAfter > 0 ? retryAfter * 1000 : Math.max(backoffMs, resetDelayMs);
+    console.log(`[GitHub Tools] Retrying in ${waitMs}ms...`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 

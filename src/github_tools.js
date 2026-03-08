@@ -1,4 +1,4 @@
-const { Octokit } = require("@octokit/rest");
+import { Octokit } from "@octokit/rest";
 
 let octokit;
 
@@ -8,6 +8,7 @@ function getOctokit() {
     if (!GITHUB_TOKEN) {
       throw new Error("GITHUB_TOKEN environment variable is not set.");
     }
+    console.log("[github_tools] Initializing Octokit with GITHUB_TOKEN");
     octokit = new Octokit({ auth: GITHUB_TOKEN });
   }
   return octokit;
@@ -166,7 +167,7 @@ async function commitFile(owner, repo, branch, path, content, message) {
 }
 
 
-module.exports = {
+export {
   createBranch,
   createPullRequest,
   getFileContent,
