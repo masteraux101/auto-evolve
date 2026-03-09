@@ -1,6 +1,6 @@
 import process from "process";
-import { executeGithubTool, listIssues } from "./github-tools.js";
-import { generatePlan } from "./llm.js";
+import { executeGithubTool, listIssues } from "./core/github-tools.js";
+import { generatePlan } from "./core/llm.js";
 
 const MAX_ITERATIONS = 20;
 

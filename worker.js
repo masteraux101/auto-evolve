@@ -1,6 +1,6 @@
 import process from "process";
-import { executeGithubTool, upsertFile } from "./github-tools.js";
-import { generateTaskOutput } from "./llm.js";
+import { executeGithubTool, upsertFile } from "./core/github-tools.js";
+import { generateTaskOutput } from "./core/llm.js";
 
 function getCurrentTask(state) {
   return state.tasks.find((task) => task.id === state.currentTaskId) || null;

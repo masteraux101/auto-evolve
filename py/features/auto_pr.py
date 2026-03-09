@@ -1,12 +1,10 @@
 import logging
 from typing import List, Dict, Tuple
 
-from src.github_client import GithubClient
-
 logging.basicConfig(level=logging.INFO)
 
 def create_pull_request_from_changes(
-    github_client: GithubClient,
+    github_client,
     branch_name: str,
     commit_message: str,
     pr_title: str,

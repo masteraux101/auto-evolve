@@ -2,6 +2,7 @@ import os
 import requests
 import subprocess
 import logging
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

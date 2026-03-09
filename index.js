@@ -1,7 +1,7 @@
 import process from "process";
 import { buildFinalOutput, buildPlannerGraph } from "./graph.js";
 import { createInitialState } from "./state.js";
-import { createBranch, createPullRequest } from "./src/github_tools.js";
+import { createBranch, createPullRequest } from "./core/github-tools.js";
 
 function getUserPromptFromEnv() {
   const explicitPrompt = process.env.USER_PROMPT;

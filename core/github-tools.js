@@ -240,6 +240,56 @@ export async function commentIssue(issueNumber, body) {
   };
 }
 
+export async function createBranch(owner, repo, branchName, baseBranch = "main") {
+  try {
+    // Get the SHA of the base branch
+    const baseRef = await githubRequest(`/repos/${owner}/${repo}/git/refs/heads/${baseBranch}`);
+    const baseSha = baseRef.object.sha;
+
+    // Create new branch
+    const data = await githubRequest(`/repos/${owner}/${repo}/git/refs`, {
+      method: "POST",
+      body: {
+        ref: `refs/heads/${branchName}`,
+        sha: baseSha,
+      },
+    });
+
+    console.log(`[GitHub Tools] Created branch: ${branchName}`);
+    return {
+      name: branchName,
+      sha: data.object.sha,
+      url: data.object.url,
+    };
+  } catch (error) {
+    throw new Error(`Failed to create branch ${branchName}: ${error.message}`);
+  }
+}
+
+export async function createPullRequest(owner, repo, title, headBranch, baseBranch = "main", body = "") {
+  try {
+    const data = await githubRequest(`/repos/${owner}/${repo}/pulls`, {
+      method: "POST",
+      body: {
+        title,
+        head: headBranch,
+        base: baseBranch,
+        body: body || "",
+      },
+    });
+
+    console.log(`[GitHub Tools] Created pull request #${data.number}: ${title}`);
+    return {
+      number: data.number,
+      url: data.html_url,
+      title: data.title,
+      state: data.state,
+    };
+  } catch (error) {
+    throw new Error(`Failed to create pull request: ${error.message}`);
+  }
+}
+
 export async function executeGithubTool(action, input = {}) {
   switch (action) {
     case "read_file":
