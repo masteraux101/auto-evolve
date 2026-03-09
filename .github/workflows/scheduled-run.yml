@@ -1,0 +1,11 @@
+name: Scheduled Run
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+
+jobs:
+  scheduled_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run a one-line script
+        run: echo "This job runs automatically every 5 minutes."
