@@ -2,262 +2,121 @@
 
 ## 项目概述
 
-Auto-Evolve 是一个结合 Node.js 和 Python 的自动代码演化系统，利用 LLM（大语言模型）和 GitHub 工作流实现自动化代码改进和 PR 创建。
+Auto-Evolve 是一个基于 LangGraph 的自我迭代 AI Agent 系统。核心是一张 LangGraph 图，包含 **Planner**（方案规划）和 **Worker**（执行反馈）两个 Agent 节点。通过 LLM 驱动自动化代码改进，所有 GitHub API 操作统一由 `core/github-tools.js` 处理。
 
 ## 目录结构
 
 ```
 auto-evovle/
-├── core/                      # Node.js 核心模块
-│   ├── llm.js               # Gemini API 集成
-│   ├── github-tools.js      # GitHub REST API 包装器
-│   └── analyze-log.js       # GitHub Actions 日志分析
+├── index.js              # 主入口：解析提示、初始化状态、执行 LangGraph 工作流
+├── graph.js              # LangGraph 图定义：Planner → Worker 流程编排
+├── state.js              # AgentStateAnnotation 状态模式
+├── planner.js            # Planner Agent：任务分解、需求检查、事实核查
+├── worker.js             # Worker Agent：代码生成、验证、测试
+├── main.py               # Python 入口（包装器，委托给 py/main.py）
+├── package.json
 │
-├── __tests__/               # 测试文件（按语言分组）
-│   ├── node/               # JavaScript 测试
-│   │   ├── auto_pr_feature.test.js
-│   │   └── services.test.js
-│   └── python/             # Python 测试
-│       ├── test_auto_pr.py
-│       ├── test_git_handler.py
-│       ├── test_github_automation.py
-│       └── test_github_client.py
+├── core/                  # Node.js 核心模块
+│   ├── llm.js            # Gemini API 集成（生成方案、生成代码）
+│   └── github-tools.js   # GitHub REST API（唯一实现，完整功能）
 │
-├── .build/                  # 构建输出和生成文件
-│   ├── dist/               # 分发构建目录
-│   └── generated/          # 生成的文件
+├── py/                    # Python 辅助工具（仅代码分析）
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── main.py            # CLI（run / lint 子命令）
+│   └── code_tools.py      # 代码质量检查（lint / complexity）
 │
-├── py/                      # Python 模块（辅助系统）
-│   ├── main.py            # Python 入口点
-│   ├── auto_pr.py         # 自动 PR 工作流
-│   ├── code_tools.py      # 代码质量检查工具
-│   ├── github_tools.py    # GitHub API 工具
-│   ├── git_handler.py     # Git 操作处理
-│   ├── git_utils.py       # Git 工具函数
-│   ├── github_client.py   # GitHub 客户端
-│   └── features/          # 功能模块
-│       └── auto_pr.py     # PR 创建功能实现
+├── scripts/               # 部署/测试脚本
+│   ├── deploy-to-repo.js
+│   ├── test-pr-creation.js
+│   ├── find-esm-modules.js
+│   └── trigger-dev-workflow-analyze.js
 │
-├── src/                     # 其他源文件
-│   ├── controllers/        # 控制器
-│   ├── services/          # 服务
-│   └── ...其他文件
-│
-├── scripts/                # 自动化脚本
-│   └── deploy-to-repo.js
-│
-├── .github/               # GitHub 配置
-│   └── workflows/         # CI/CD 工作流
-│       └── local-auto-evolve.yml
-│
-├── docs/                  # 文档
-│   ├── ARCHITECTURE.md   # 本文件
-│   └── DEVELOPMENT.md    # 开发指南（待创建）
-│
-# Node.js 核心入口点和主要文件
-├── index.js              # 主入口点
-├── graph.js              # LangGraph 工作流定义
-├── state.js              # 工作流状态定义
-├── planner.js            # 任务规划节点
-├── worker.js             # 代码生成节点
-│
-# 配置文件
-├── package.json          # Node.js 依赖
-├── tsconfig.json         # TypeScript 配置
-├── .env                  # 环境变量（本地）
-│
-# Python 入口点
-└── main.py              # Python 入口点（包装器）
+└── docs/
+    └── ARCHITECTURE.md    # 本文件
 ```
 
 ## 核心系统架构
 
-### Node.js LangGraph 系统（主系统）
+### LangGraph 工作流
 
-**目的**: 基于 LLM 的自动化代码演化和改进
-
-**组件**:
-
-1. **index.js** - 主入口点
-   - 解析用户提示
-   - 初始化工作流状态
-   - 执行 LangGraph 工作流
-   - GitHub 问题结果回写
-
-2. **graph.js** - LangGraph 工作流定义
-   - 定义规划和工作流程
-   - 路由决策逻辑
-   - 工作流完成条件
-
-3. **state.js** - 工作流状态注解
-   - 定义状态模式
-   - 类型检查和验证
-
-4. **planner.js** - 规划节点 (~8276 行)
-   - 任务分解和规划
-   - 需求检查
-   - 事实检查反馈处理
-   - 调用 LLM 进行规划
-
-5. **worker.js** - 工作节点 (~8282 行)
-   - 代码生成
-   - 代码验证
-   - 测试运行
-   - 调用 LLM 进行实现
-
-### 核心模块（/core/）
-
-1. **llm.js** - LLM 集成
-   - Gemini API 调用
-   - 请求重试和错误处理
-   - 模型配置管理
-
-2. **github-tools.js** - GitHub API 集成
-   - 分支创建
-   - PR 创建
-   - 问题评论
-   - 文件提交
-
-3. **analyze-log.js** - 工作流日志分析
-   - GitHub Actions 日志解析
-   - 执行结果分析
-   - 失败信息提取
-
-### Python 辅助系统（/py/）
-
-**目的**: 代码质量验证和 GitHub 自动化支持
-
-**主要组件**:
-
-1. **code_tools.py** - 代码分析
-   - 代码检测（pylint）
-   - 复杂度检查（radon）
-   - 代码质量评分
-
-2. **github_tools.py** - GitHub API 工具
-   - PR 创建
-   - 分支管理
-   - 文件提交
-
-3. **auto_pr.py** - 自动 PR 工作流
-   - 分支创建
-   - 代码验证
-   - PR 提交
-   - 端到端工作流编排
-
-4. **git_handler.py & git_utils.py** - Git 操作
-   - 本地 Git 命令执行
-   - 仓库状态管理
-
-## 文件移动记录
-
-### 重新组织（2024-03-08）
-
-从混乱的结构重新整理为清晰的语言隔离组织：
-
-**移动到 /core/**:
-- `llm.js` - 从根目录
-- `github-tools.js` - 从根目录
-- `analyze-workflow.js` → `analyze-log.js` - 重命名并移动
-
-**删除（重复文件）**:
-- `src/auto_pr.py` - 重复，已删除（保留 py/auto_pr.py）
-- `src/code_tools.py` - 重复，已删除（保留 py/code_tools.py）
-- `src/git_handler.py` - 重复，已删除（保留 py/git_handler.py）
-- `src/git_utils.py` - 重复，已删除（保留 py/git_utils.py）
-- `src/github_*.py` - 重复文件，已删除
-- `src/features/` - 重复目录，已删除
-
-**整理测试**:
-- `tests/*.test.js` → `__tests__/node/`
-- `tests/*.py` → `__tests__/python/`
-- `py/tests/*.py` → `__tests__/python/`
-
-**生成文件**:
-- `generated/` → `.build/generated/`
-
-## 导入路径更新
-
-### 更新的 imports
-
-```javascript
-// index.js
-import { createBranch, createPullRequest } from "./core/github-tools.js";
-
-// planner.js
-import { generatePlan } from "./core/llm.js";
-
-// worker.js
-import { generateTaskOutput } from "./core/llm.js";
 ```
+用户提示 → index.js → graph.js
+                         ├── Planner Agent (planner.js)
+                         │    └── 调用 core/llm.js 生成方案
+                         │    └── 调用 core/github-tools.js 读取仓库
+                         └── Worker Agent (worker.js)
+                              └── 调用 core/llm.js 生成代码
+                              └── 调用 core/github-tools.js 提交代码/创建 PR
+                              └── 语法检查 / 测试执行
+```
+
+### core/github-tools.js — 完整 GitHub API
+
+所有 GitHub 操作统一在此文件，通过 `executeGithubTool(action, input)` 分发：
+
+| 分类 | Action | 说明 |
+|------|--------|------|
+| **文件** | `read_file` | 读取仓库文件 |
+| | `list_directory` | 列出目录内容 |
+| | `upsert_file` | 创建/更新单文件 |
+| | `delete_file` | 删除文件 |
+| | `commit_multiple_files` | 通过 Git Tree API 批量提交多文件 |
+| **Issue** | `create_issue` | 创建 Issue |
+| | `get_issue` | 获取 Issue 详情 |
+| | `update_issue` | 更新 Issue（标题/正文/状态） |
+| | `close_issue` | 关闭 Issue |
+| | `list_issues` | 列出 Issues |
+| | `comment_issue` | 评论 Issue |
+| | `add_labels` | 添加标签 |
+| | `remove_label` | 移除标签 |
+| **PR** | `create_pull_request` | 创建 Pull Request |
+| | `list_pull_requests` | 列出 PRs |
+| | `get_pull_request` | 获取 PR 详情 |
+| | `merge_pull_request` | 合并 PR（squash/merge/rebase） |
+| | `list_pr_files` | 列出 PR 变更文件 |
+| **Branch** | `create_branch` | 创建分支 |
+| | `list_branches` | 列出分支 |
+| | `delete_branch` | 删除分支 |
+| **Actions** | `list_workflows` | 列出工作流 |
+| | `list_workflow_runs` | 查看工作流运行状态 |
+| | `trigger_workflow` | 手动触发工作流 |
+| | `get_workflow_run_logs` | 获取运行日志/步骤 |
+| | `create_scheduled_workflow` | 创建定时 Action（cron） |
+| **Repo** | `get_repo_info` | 获取仓库基本信息 |
+
+### Python 辅助工具
+
+Python 仅保留代码分析功能，GitHub 操作全部由 JS 处理：
+
+| 文件 | 职责 |
+|------|------|
+| `py/code_tools.py` | Python 代码的 lint 检查和复杂度分析 |
+| `py/main.py` | CLI 入口：`run`（调用 node index.js）、`lint`（代码检查） |
 
 ## 运行项目
 
-### Node.js LangGraph 系统
-
 ```bash
-# 基本运行
+# Node.js LangGraph 系统
 node index.js
 
-# 使用环境变量设置提示
-USER_PROMPT="improve code quality" node index.js
-
-# 设置 API 密钥
-export GEMINI_API_KEY="your-api-key"
-export GITHUB_TOKEN="your-github-token"
-node index.js
-```
-
-### Python 模块
-
-```bash
-# 运行主模块
-python3 main.py
-
-# 导入特定功能
-python3 -c "from py.auto_pr import create_pr_workflow; create_pr_workflow(...)"
-```
-
-## 测试
-
-```bash
-# 运行 JavaScript 测试
-npm test
-
-# 运行 Python 测试
-python3 -m pytest __tests__/python/
+# Python CLI
+python3 -m py.main run                    # 运行 Planner/Worker
+python3 -m py.main lint path/to/file.py   # 代码质量检查
 ```
 
 ## 环境变量
 
-关键环境变量（见 `.env.example`）:
-
 - `GEMINI_API_KEY` - Google Gemini API 密钥
-- `GITHUB_TOKEN` - GitHub 个人访问令牌
+- `GITHUB_TOKEN` / `GH_PAT` - GitHub 个人访问令牌
 - `TARGET_REPOSITORY` - 目标仓库 (owner/repo)
-- `GITHUB_REPOSITORY` - GitHub Actions 自动设置
-- `ISSUE_NUMBER` - 处理的题号
-- `USER_PROMPT` - 用户提示（如果不通过其他方式提供）
+- `TARGET_BRANCH` - 目标分支（默认 main）
+- `ISSUE_NUMBER` - 处理的 Issue 号
+- `USER_PROMPT` - 用户提示
 
-## 依赖关系
+## 后续方向
 
-### Node.js
-
-- `@langchain/langgraph` - LangGraph 工作流
-- `@anthropic-ai/sdk` 或类似 - LLM 调用
-- 见 `package.json` 获取完整列表
-
-### Python
-
-- `requests` - HTTP 请求
-- `PyGithub` - GitHub API
-- `pylint`, `radon` - 代码分析
-- 见 `py/requirements.txt` 获取完整列表
-
-## 后续任务
-
-- [ ] 创建 `docs/DEVELOPMENT.md` - 开发指南
-- [ ] 为 `/docs/` 编写模块 API 文档
-- [ ] 集成 PR 创建到 GitHub Actions 工作流
-- [ ] 添加性能基准测试
-- [ ] 完整集成测试
+- [ ] 为 Worker Agent 添加更多工具节点（shell 执行、测试运行、代码重构等）
+- [ ] 实现自我迭代闭环：Worker 执行 → 测试 → 分析失败 → 自动修复
+- [ ] 补充 core/github-tools.js 的单元测试
+- [ ] 添加集成测试

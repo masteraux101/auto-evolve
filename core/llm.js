@@ -39,6 +39,11 @@ async function callGemini(prompt, options = {}) {
           temperature: options.temperature ?? 0.2,
           responseMimeType: options.responseMimeType,
         },
+        tools: [
+          {
+            googleSearch: {},
+          },
+        ],
       }),
     });
 
