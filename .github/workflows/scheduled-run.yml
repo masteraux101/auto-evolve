@@ -1,11 +1,16 @@
 name: Scheduled Run
+
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 0 * * *' # Runs every day at midnight UTC
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  scheduled_job:
+  trigger_auto_evolve:
     runs-on: ubuntu-latest
     steps:
-      - name: Run a one-line script
-        run: echo "This job runs automatically every 5 minutes."
+      - name: Trigger auto-evolve workflow
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run auto-evolve.yml --ref dev
